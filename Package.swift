@@ -26,5 +26,11 @@ let package = Package(
             path: "Sources/TileDeckHelper",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .testTarget(
+            name: "TileDeckTests",
+            dependencies: ["TileDeck"],
+            path: "Tests/TileDeckTests",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )

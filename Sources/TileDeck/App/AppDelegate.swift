@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MenuBarManager.shared.activateIfNeeded()
         FanController.shared.activateIfNeeded()
         AppVolume.shared.activateIfNeeded()
+        PermissionsWindow.shared.showOnFirstLaunch()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

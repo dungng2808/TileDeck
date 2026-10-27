@@ -21,6 +21,7 @@ final class AppVolume: ObservableObject {
     nonisolated static let aggregatePrefix = "com.dungng.tiledeck.appvolume."
     private static let levelsKey = "appVolumeLevels"
     private static let mutedKey = "appVolumeMuted"
+    private static let captureWorkedKey = "appVolumeCaptureWorked"
 
     @Published private(set) var apps: [App] = []
     @Published private(set) var levels: [String: Float]
@@ -121,6 +122,49 @@ final class AppVolume: ObservableObject {
         UserDefaults.standard.set(Array(muted), forKey: Self.mutedKey)
     }
 
+    // MARK: Permission
+
+    enum CapturePermission { case granted, denied, notDetermined }
+
+    /// "System Audio Recording" has no public status API. The TCC preflight
+    /// call answers it (0 granted, 1 denied, 2 not asked yet); if that call is
+    /// unavailable, a tap that once worked on this Mac is taken as permission.
+    static var capturePermission: CapturePermission {
+        if let preflight = tccPreflight {
+            switch preflight("kTCCServiceAudioCapture" as CFString, nil) {
+            case 0: return .granted
+            case 1: return .denied
+            default: return .notDetermined
+            }
+        }
+        return UserDefaults.standard.bool(forKey: captureWorkedKey) ? .granted : .notDetermined
+    }
+
+    /// Asks macOS to show the permission prompt: creating any process tap
+    /// triggers it, so tap TileDeck's own (silent) audio and drop it again.
+    static func requestCapturePermission() {
+        var pid = getpid()
+        var object = AudioObjectID(kAudioObjectUnknown)
+        var address = CA.address(kAudioHardwarePropertyTranslatePIDToProcessObject)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(CA.system, &address, UInt32(MemoryLayout<pid_t>.size), &pid, &size, &object) == noErr,
+              object != kAudioObjectUnknown else { return }
+        let description = CATapDescription(stereoMixdownOfProcesses: [object])
+        description.isPrivate = true
+        var tap = AudioObjectID(kAudioObjectUnknown)
+        if AudioHardwareCreateProcessTap(description, &tap) == noErr {
+            AudioHardwareDestroyProcessTap(tap)
+            UserDefaults.standard.set(true, forKey: captureWorkedKey)
+        }
+    }
+
+    private typealias Preflight = @convention(c) (CFString, CFDictionary?) -> Int32
+    private static let tccPreflight: Preflight? = {
+        guard let handle = dlopen("/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC", RTLD_LAZY),
+              let symbol = dlsym(handle, "TCCAccessPreflight") else { return nil }
+        return unsafeBitCast(symbol, to: Preflight.self)
+    }()
+
     // MARK: Apps and taps
 
     func refresh() {
@@ -146,6 +190,7 @@ final class AppVolume: ObservableObject {
             players.removeValue(forKey: app.id)?.stop()
             do {
                 players[app.id] = try ProcessTapPlayer(processes: app.processes, outputUID: outputUID, gain: gain, name: app.name)
+                UserDefaults.standard.set(true, forKey: Self.captureWorkedKey)
                 log.info("tap on \(app.id, privacy: .public): \(app.processes.count) processes, gain \(gain)")
             } catch {
                 log.error("tap failed for \(app.id, privacy: .public): \(String(describing: error), privacy: .public)")

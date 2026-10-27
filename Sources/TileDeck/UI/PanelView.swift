@@ -124,20 +124,63 @@ struct PanelView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Label("Open Source • Miễn phí", systemImage: "checkmark.seal.fill")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .symbolRenderingMode(.multicolor)
+        HStack(spacing: 10) {
+            Button {
+                NSWorkspace.shared.open(URL(string: "https://github.com/\(UpdateChecker.repository)")!)
+            } label: {
+                Label("Mã nguồn mở", systemImage: "checkmark.seal.fill")
+                    .symbolRenderingMode(.multicolor)
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .help("Mở trang GitHub của TileDeck")
             Spacer()
-            Button("Kiểm tra cập nhật") {}
-                .controlSize(.small)
-                .disabled(true)
-                .help("Sắp có")
+            Button {
+                PermissionsWindow.shared.show()
+            } label: {
+                Image(systemName: "lock.shield")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Quyền truy cập")
+            UpdateButton()
             Button("Thoát") { NSApp.terminate(nil) }
                 .buttonStyle(.plain)
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
+        }
+        .onAppear { UpdateChecker.shared.checkIfDue() }
+    }
+}
+
+private struct UpdateButton: View {
+    @ObservedObject private var checker = UpdateChecker.shared
+
+    var body: some View {
+        switch checker.state {
+        case .available(let version, _):
+            Button("Tải bản \(version)") { checker.openDownload() }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+        case .checking:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("Đang kiểm tra…").font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        default:
+            Button(label) { checker.check() }
+                .controlSize(.small)
+                .help("Phiên bản hiện tại: \(checker.currentVersion)")
+        }
+    }
+
+    private var label: String {
+        switch checker.state {
+        case .upToDate: "Đã mới nhất ✓"
+        case .noReleases: "Chưa có bản phát hành"
+        case .failed: "Lỗi mạng · thử lại"
+        default: "Kiểm tra cập nhật"
         }
     }
 }

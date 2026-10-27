@@ -12,8 +12,9 @@ BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
 
 APP="build/TileDeck.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Library/LaunchDaemons"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Library/LaunchDaemons"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp "$BIN_DIR/TileDeck" "$APP/Contents/MacOS/TileDeck"
 # The privileged fan helper, registered with launchd through SMAppService.
 cp "$BIN_DIR/TileDeckHelper" "$APP/Contents/MacOS/TileDeckHelper"
@@ -25,8 +26,11 @@ fi
 # A stable signing identity keeps the Accessibility permission across rebuilds;
 # ad-hoc signing (-) makes macOS ask again after every build.
 IDENTITY="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')}"
+# Notarization requires a secure timestamp, which Developer ID signing provides.
+TIMESTAMP="--timestamp=none"
+[[ "$IDENTITY" == Developer\ ID* ]] && TIMESTAMP="--timestamp"
 # Inside out: the helper first, then the app that contains it.
-codesign --force --options runtime --identifier com.dungng.tiledeck.helper --sign "${IDENTITY:--}" "$APP/Contents/MacOS/TileDeckHelper"
-codesign --force --options runtime --sign "${IDENTITY:--}" "$APP"
+codesign --force --options runtime "$TIMESTAMP" --identifier com.dungng.tiledeck.helper --sign "${IDENTITY:--}" "$APP/Contents/MacOS/TileDeckHelper"
+codesign --force --options runtime "$TIMESTAMP" --sign "${IDENTITY:--}" "$APP"
 
 echo "Built $APP ($(du -sh "$APP" | cut -f1)), signed with: ${IDENTITY:-ad-hoc}"

@@ -134,7 +134,7 @@ final class DDCService: @unchecked Sendable {
         return reply
     }
 
-    private static func checksum(_ seed: UInt8, _ bytes: ArraySlice<UInt8>) -> UInt8 {
+    static func checksum(_ seed: UInt8, _ bytes: ArraySlice<UInt8>) -> UInt8 {
         bytes.reduce(seed, ^)
     }
 }

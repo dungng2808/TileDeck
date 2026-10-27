@@ -6,6 +6,8 @@
 	<string>TileDeck</string>
 	<key>CFBundleDisplayName</key>
 	<string>TileDeck</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.dungng.tiledeck</string>
 	<key>CFBundleExecutable</key>
