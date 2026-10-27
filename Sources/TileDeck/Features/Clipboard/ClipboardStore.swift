@@ -1,0 +1,331 @@
+import AppKit
+import Carbon.HIToolbox
+import CryptoKit
+
+struct ClipboardItem: Codable, Identifiable, Equatable {
+    enum Kind: String, Codable {
+        case text, link, file, image, color
+    }
+
+    var id = UUID()
+    var kind: Kind
+    var text: String?
+    var filePaths: [String]?
+    var imageFile: String?
+    var imageWidth: Int?
+    var imageHeight: Int?
+    var sourceApp: String?
+    var sourceBundleID: String?
+    var date = Date()
+    var isPinned = false
+    /// Content fingerprint, so copying the same thing again moves it to the top instead of duplicating it.
+    var fingerprint: String
+}
+
+/// Clipboard history. macOS has no "clipboard changed" notification, so this
+/// reads NSPasteboard.changeCount (a single integer) twice a second with timer
+/// coalescing, only while the feature is on and the screens are awake.
+/// Text lives in a JSON file; images are PNG files next to it.
+@MainActor
+final class ClipboardStore: ObservableObject {
+    static let shared = ClipboardStore()
+    static let limits = [50, 100, 200]
+
+    private enum Key {
+        static let enabled = "clipboardEnabled"
+        static let limit = "clipboardLimit"
+        static let skipConcealed = "clipboardSkipPasswords"
+    }
+
+    @Published private(set) var isEnabled: Bool
+    @Published private(set) var limit: Int
+    @Published private(set) var skipConcealed: Bool
+    @Published private(set) var items: [ClipboardItem] = []
+
+    private let pasteboard = NSPasteboard.general
+    private var lastChangeCount = 0
+    private var timer: Timer?
+    private var hotKey: UInt32?
+    private var loaded = false
+    private var saveWork: DispatchWorkItem?
+    private var sleepObservers: [NSObjectProtocol] = []
+
+    private static let directory: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let url = base.appendingPathComponent("TileDeck/Clipboard", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }()
+    private static var indexURL: URL { directory.appendingPathComponent("history.json") }
+
+    private init() {
+        let defaults = UserDefaults.standard
+        isEnabled = defaults.bool(forKey: Key.enabled)
+        limit = defaults.integer(forKey: Key.limit) == 0 ? 200 : defaults.integer(forKey: Key.limit)
+        skipConcealed = defaults.object(forKey: Key.skipConcealed) as? Bool ?? true
+    }
+
+    // MARK: Settings
+
+    func activateIfNeeded() {
+        if isEnabled { start() }
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        isEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Key.enabled)
+        enabled ? start() : stop()
+    }
+
+    func setLimit(_ limit: Int) {
+        self.limit = limit
+        UserDefaults.standard.set(limit, forKey: Key.limit)
+        trim()
+        scheduleSave()
+    }
+
+    func setSkipConcealed(_ skip: Bool) {
+        skipConcealed = skip
+        UserDefaults.standard.set(skip, forKey: Key.skipConcealed)
+    }
+
+    private func start() {
+        loadIfNeeded()
+        lastChangeCount = pasteboard.changeCount
+        startTimer()
+        if hotKey == nil {
+            hotKey = HotKeys.shared.register(keyCode: kVK_ANSI_C, modifiers: cmdKey | shiftKey) {
+                ClipboardHUD.shared.toggle()
+            }
+        }
+        if sleepObservers.isEmpty {
+            let center = NSWorkspace.shared.notificationCenter
+            sleepObservers = [
+                center.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.stopTimer() }
+                },
+                center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.startTimer() }
+                },
+            ]
+        }
+    }
+
+    private func stop() {
+        stopTimer()
+        if let hotKey { HotKeys.shared.unregister([hotKey]) }
+        hotKey = nil
+        sleepObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
+        sleepObservers.removeAll()
+        ClipboardHUD.shared.close()
+    }
+
+    private func startTimer() {
+        guard timer == nil, isEnabled else { return }
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.poll() }
+        }
+        timer.tolerance = 0.25
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    private func stopTimer() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    // MARK: Capture
+
+    func poll() {
+        let count = pasteboard.changeCount
+        guard count != lastChangeCount else { return }
+        lastChangeCount = count
+        capture()
+    }
+
+    private static let transientTypes: Set<String> = ["org.nspasteboard.TransientType", "org.nspasteboard.AutoGeneratedType"]
+    private static let concealedTypes: Set<String> = ["org.nspasteboard.ConcealedType", "com.agilebits.onepassword"]
+    private static let colorPattern = try! NSRegularExpression(pattern: "^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+
+    private func capture() {
+        let types = Set((pasteboard.types ?? []).map(\.rawValue))
+        guard !types.isEmpty, types.isDisjoint(with: Self.transientTypes) else { return }
+        if skipConcealed && !types.isDisjoint(with: Self.concealedTypes) { return }
+
+        let source = NSWorkspace.shared.frontmostApplication
+        var item: ClipboardItem?
+
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            let paths = urls.map(\.path)
+            item = ClipboardItem(kind: .file, filePaths: paths, fingerprint: "file:" + paths.joined(separator: "\n"))
+        } else if let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff), pasteboard.string(forType: .string) == nil {
+            item = storeImage(data)
+        } else if let string = pasteboard.string(forType: .string), !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            let range = NSRange(trimmed.startIndex..., in: trimmed)
+            let kind: ClipboardItem.Kind
+            if Self.colorPattern.firstMatch(in: trimmed, range: range) != nil {
+                kind = .color
+            } else if !trimmed.contains(where: \.isNewline), let url = URL(string: trimmed), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                kind = .link
+            } else {
+                kind = .text
+            }
+            item = ClipboardItem(kind: kind, text: string, fingerprint: "text:" + Self.hash(Data(string.utf8)))
+        }
+
+        guard var item else { return }
+        item.sourceApp = source?.localizedName
+        item.sourceBundleID = source?.bundleIdentifier
+        insert(item)
+    }
+
+    private func storeImage(_ data: Data) -> ClipboardItem? {
+        guard let rep = NSBitmapImageRep(data: data) else { return nil }
+        let fingerprint = "image:" + Self.hash(data)
+        if items.contains(where: { $0.fingerprint == fingerprint }) {
+            return ClipboardItem(kind: .image, fingerprint: fingerprint)
+        }
+        let url = Self.directory.appendingPathComponent(UUID().uuidString + ".png")
+        let png = pasteboard.data(forType: .png) != nil ? data : rep.representation(using: .png, properties: [:])
+        DispatchQueue.global(qos: .utility).async {
+            try? png?.write(to: url)
+        }
+        return ClipboardItem(kind: .image, imageFile: url.lastPathComponent, imageWidth: rep.pixelsWide, imageHeight: rep.pixelsHigh, fingerprint: fingerprint)
+    }
+
+    private func insert(_ item: ClipboardItem) {
+        if let index = items.firstIndex(where: { $0.fingerprint == item.fingerprint }) {
+            var existing = items.remove(at: index)
+            existing.date = Date()
+            existing.sourceApp = item.sourceApp ?? existing.sourceApp
+            items.insert(existing, at: 0)
+        } else {
+            items.insert(item, at: 0)
+        }
+        trim()
+        scheduleSave()
+    }
+
+    private func trim() {
+        var unpinned = 0
+        var removed: [ClipboardItem] = []
+        items = items.filter { item in
+            guard !item.isPinned else { return true }
+            unpinned += 1
+            if unpinned > limit {
+                removed.append(item)
+                return false
+            }
+            return true
+        }
+        deleteFiles(of: removed)
+    }
+
+    // MARK: Editing
+
+    /// Pinned items first, then newest first.
+    var orderedItems: [ClipboardItem] {
+        items.filter(\.isPinned) + items.filter { !$0.isPinned }
+    }
+
+    func togglePin(_ id: UUID) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].isPinned.toggle()
+        trim()
+        scheduleSave()
+    }
+
+    func delete(_ id: UUID) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        deleteFiles(of: [items.remove(at: index)])
+        scheduleSave()
+    }
+
+    func clearAll() {
+        let removed = items.filter { !$0.isPinned }
+        items.removeAll { !$0.isPinned }
+        deleteFiles(of: removed)
+        scheduleSave()
+    }
+
+    func imageURL(_ item: ClipboardItem) -> URL? {
+        item.imageFile.map { Self.directory.appendingPathComponent($0) }
+    }
+
+    // MARK: Paste
+
+    /// Puts the item back on the clipboard and types ⌘V into the app underneath.
+    func paste(_ item: ClipboardItem) {
+        write(item)
+        if let index = items.firstIndex(where: { $0.id == item.id }), !items[index].isPinned {
+            var moved = items.remove(at: index)
+            moved.date = Date()
+            items.insert(moved, at: 0)
+            scheduleSave()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            Self.typeCommandV()
+        }
+    }
+
+    func write(_ item: ClipboardItem) {
+        pasteboard.clearContents()
+        switch item.kind {
+        case .text, .link, .color:
+            pasteboard.setString(item.text ?? "", forType: .string)
+        case .file:
+            pasteboard.writeObjects((item.filePaths ?? []).map { URL(fileURLWithPath: $0) as NSURL })
+        case .image:
+            if let url = imageURL(item), let data = try? Data(contentsOf: url) {
+                pasteboard.setData(data, forType: .png)
+                if let tiff = NSImage(data: data)?.tiffRepresentation { pasteboard.setData(tiff, forType: .tiff) }
+            }
+        }
+        // Our own write must not come back as a new history entry.
+        lastChangeCount = pasteboard.changeCount
+    }
+
+    private static func typeCommandV() {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        for isDown in [true, false] {
+            let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: isDown)
+            event?.flags = .maskCommand
+            event?.post(tap: .cghidEventTap)
+        }
+    }
+
+    // MARK: Persistence
+
+    private func loadIfNeeded() {
+        guard !loaded else { return }
+        loaded = true
+        guard let data = try? Data(contentsOf: Self.indexURL),
+              let saved = try? JSONDecoder().decode([ClipboardItem].self, from: data) else { return }
+        items = saved
+    }
+
+    private func scheduleSave() {
+        saveWork?.cancel()
+        let snapshot = items
+        let work = DispatchWorkItem {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            try? data.write(to: Self.indexURL, options: .atomic)
+        }
+        saveWork = work
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1, execute: work)
+    }
+
+    private func deleteFiles(of removed: [ClipboardItem]) {
+        let urls = removed.compactMap(imageURL)
+        guard !urls.isEmpty else { return }
+        DispatchQueue.global(qos: .utility).async {
+            urls.forEach { try? FileManager.default.removeItem(at: $0) }
+        }
+    }
+
+    private static func hash(_ data: Data) -> String {
+        SHA256.hash(data: data).prefix(12).map { String(format: "%02x", $0) }.joined()
+    }
+}
