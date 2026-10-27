@@ -17,9 +17,11 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>14.0</string>
+	<string>14.2</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>TileDeck chỉnh âm lượng riêng cho từng ứng dụng bằng cách phát lại âm thanh của ứng dụng đó.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>TileDeck tắt Bluetooth khi gập máy và bật lại khi mở máy (Sleep Guard).</string>
 	<key>NSHighResolutionCapable</key>

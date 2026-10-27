@@ -119,13 +119,7 @@ struct PanelView: View {
         case .fans:
             FansTab()
         case .sound:
-            Card {
-                Label("\(tab.title) — đang làm", systemImage: "hammer")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 20)
-            }
+            SoundTab()
         }
     }
 
