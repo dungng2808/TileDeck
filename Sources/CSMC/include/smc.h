@@ -13,4 +13,8 @@ void smc_close(io_connect_t connection);
 kern_return_t smc_read(io_connect_t connection, const char *key, uint8_t bytes[32], uint32_t *size);
 kern_return_t smc_write(io_connect_t connection, const char *key, const uint8_t *bytes, uint32_t size);
 
+/// Number of keys the SMC exposes, and the key at a given index (as 4 chars plus a terminating NUL).
+uint32_t smc_key_count(io_connect_t connection);
+kern_return_t smc_key_at(io_connect_t connection, uint32_t index, char key[5]);
+
 #endif

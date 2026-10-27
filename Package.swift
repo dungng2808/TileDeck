@@ -10,11 +10,21 @@ let package = Package(
             path: "Sources/CSMC",
             linkerSettings: [.linkedFramework("IOKit")]
         ),
+        .target(
+            name: "FanHelperShared",
+            path: "Sources/FanHelperShared"
+        ),
         .executableTarget(
             name: "TileDeck",
-            dependencies: ["CSMC"],
+            dependencies: ["CSMC", "FanHelperShared"],
             path: "Sources/TileDeck",
             swiftSettings: [.swiftLanguageMode(.v5)]
-        )
+        ),
+        .executableTarget(
+            name: "TileDeckHelper",
+            dependencies: ["CSMC", "FanHelperShared"],
+            path: "Sources/TileDeckHelper",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )

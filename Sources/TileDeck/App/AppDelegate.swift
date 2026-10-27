@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ClipboardStore.shared.activateIfNeeded()
         MouseChord.shared.activateIfNeeded()
         MenuBarManager.shared.activateIfNeeded()
+        FanController.shared.activateIfNeeded()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -24,5 +25,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Caffeinate.shared.stop()
         ProcessFreezer.shared.thawAll()
         WindowSwitcher.shared.restoreNativeSwitcher()
+        FanController.shared.restoreAll()
     }
 }

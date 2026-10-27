@@ -3,7 +3,7 @@
 
 // Struct layout and selectors used by the AppleSMC kernel user client.
 enum { kSMCUserClientSelector = 2 };
-enum { kSMCReadKey = 5, kSMCWriteKey = 6, kSMCGetKeyInfo = 9 };
+enum { kSMCReadKey = 5, kSMCWriteKey = 6, kSMCGetKeyFromIndex = 8, kSMCGetKeyInfo = 9 };
 
 typedef struct {
     uint8_t major, minor, build, reserved;
@@ -88,4 +88,25 @@ kern_return_t smc_write(io_connect_t connection, const char *key, const uint8_t 
     input.data8 = kSMCWriteKey;
     memcpy(input.bytes, bytes, size);
     return call(connection, &input, &output);
+}
+
+uint32_t smc_key_count(io_connect_t connection) {
+    uint8_t bytes[32];
+    uint32_t size = 0;
+    if (smc_read(connection, "#KEY", bytes, &size) != KERN_SUCCESS || size < 4) return 0;
+    return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) | ((uint32_t)bytes[2] << 8) | (uint32_t)bytes[3];
+}
+
+kern_return_t smc_key_at(io_connect_t connection, uint32_t index, char key[5]) {
+    SMCKeyData input = {0}, output = {0};
+    input.data8 = kSMCGetKeyFromIndex;
+    input.data32 = index;
+    kern_return_t result = call(connection, &input, &output);
+    if (result != KERN_SUCCESS) return result;
+    key[0] = (char)(output.key >> 24);
+    key[1] = (char)(output.key >> 16);
+    key[2] = (char)(output.key >> 8);
+    key[3] = (char)output.key;
+    key[4] = 0;
+    return KERN_SUCCESS;
 }

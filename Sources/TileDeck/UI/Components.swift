@@ -81,3 +81,24 @@ struct Pill: View {
         .background(tint.opacity(0.12), in: Capsule())
     }
 }
+
+/// FeatureHeader's icon-title-subtitle layout, for cards without a switch.
+struct FeatureHeaderText: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.blue)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 12, weight: .semibold))
+                Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
