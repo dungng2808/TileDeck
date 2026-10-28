@@ -1,5 +1,6 @@
 import AppKit
 import FanHelperShared
+import Security
 import ServiceManagement
 
 /// Fan control through TileDeck's privileged helper (SMC writes need root).
@@ -22,6 +23,7 @@ final class FanController: ObservableObject {
 
     static let shared = FanController()
     private static let modesKey = "fanModes"
+    private static let registeredSignatureKey = "fanHelperRegisteredSignature"
     private static let curveInterval: TimeInterval = 3
     /// Weight of the newest reading in the smoothed temperature. Single core
     /// temperatures on Apple Silicon jump 10–20° within seconds; without
@@ -32,8 +34,6 @@ final class FanController: ObservableObject {
     private static let maxRise = 500.0
     private static let maxFall = 150.0
     private static let deadband = 100.0
-    private static let helperRequirement =
-        "anchor apple generic and identifier \"com.dungng.tiledeck.helper\" and certificate leaf[subject.OU] = \"83K669D2N5\""
 
     @Published private(set) var helperState: HelperState = .notInstalled
     @Published private(set) var modes: [Int: Mode]
@@ -73,6 +73,7 @@ final class FanController: ObservableObject {
         lastError = nil
         do {
             try service.register()
+            UserDefaults.standard.set(Self.signature, forKey: Self.registeredSignatureKey)
         } catch {
             // Registration that still awaits the user's approval also lands here.
             if service.status != .requiresApproval { lastError = error.localizedDescription }
@@ -90,7 +91,7 @@ final class FanController: ObservableObject {
         let connection = NSXPCConnection(machServiceName: FanHelper.machService, options: .privileged)
         connection.remoteObjectInterface = NSXPCInterface(with: FanHelperProtocol.self)
         // Talk only to our own helper, never to something squatting on the service name.
-        connection.setCodeSigningRequirement(Self.helperRequirement)
+        connection.setCodeSigningRequirement(FanHelper.helperRequirement)
         connection.invalidationHandler = { [weak self, weak connection] in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -131,10 +132,60 @@ final class FanController: ObservableObject {
 
     func activateIfNeeded() {
         refreshHelperState()
-        guard helperState == .ready, isControlling else { return }
+        guard helperState == .ready else { return }
+        if UserDefaults.standard.string(forKey: Self.registeredSignatureKey) != Self.signature {
+            reregisterHelper()
+            return
+        }
+        guard isControlling else { return }
         for fan in modes.keys { apply(fan) }
         updateCurveTimer()
     }
+
+    /// launchd pins a daemon to the signature it was registered with, so after
+    /// TileDeck is re-signed (a self-built copy replaced by a release, say) it
+    /// refuses to start the helper ("needs LWCR update") until it is registered again.
+    private func reregisterHelper() {
+        service.unregister { [weak self] _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.installHelper()
+                    self?.resumeWhenReady(attempts: 10)
+                }
+            }
+        }
+    }
+
+    /// Right after registering, the service can report "not registered" for a
+    /// moment; wait for it before handing the saved fan modes to the helper.
+    private func resumeWhenReady(attempts: Int) {
+        refreshHelperState()
+        guard helperState == .ready else {
+            if attempts > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    MainActor.assumeIsolated { self?.resumeWhenReady(attempts: attempts - 1) }
+                }
+            }
+            return
+        }
+        guard isControlling else { return }
+        for fan in modes.keys { apply(fan) }
+        updateCurveTimer()
+    }
+
+    /// The signing certificate of the running TileDeck, e.g. "Developer ID Application: … (TEAM)".
+    private static let signature: String = {
+        var code: SecCode?
+        var staticCode: SecStaticCode?
+        var information: CFDictionary?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
+              SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
+              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
+              let certificates = (information as? [String: Any])?[kSecCodeInfoCertificates as String] as? [SecCertificate],
+              let leaf = certificates.first
+        else { return "unsigned" }
+        return SecCertificateCopySubjectSummary(leaf) as String? ?? "unknown"
+    }()
 
     func setMode(_ mode: Mode, for fan: Int) {
         modes[fan] = mode
