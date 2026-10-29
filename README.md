@@ -85,6 +85,12 @@ Sources/
 Tests/TileDeckTests/ Bộ kiểm thử
 ```
 
+## Ủng hộ
+
+TileDeck miễn phí và mã nguồn mở. Nếu app có ích với bạn, bạn có thể mời mình một ly cà phê qua VietQR. Quét bằng app ngân hàng bất kỳ, số tiền tuỳ bạn. Trong app, bấm nút ♡ Ủng hộ ở cuối bảng để mở mã này.
+
+<img src="Resources/Donate.png" alt="VietQR ủng hộ TileDeck: TPBank 28341082203, NGUYEN TUAN DUNG" width="240">
+
 ## Giấy phép
 
 [MIT](LICENSE). Tên các cảm biến nhiệt lấy theo bảng của [Stats](https://github.com/exelban/stats) (MIT), xem [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

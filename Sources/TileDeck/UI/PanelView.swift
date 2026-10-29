@@ -31,20 +31,28 @@ struct PanelView: View {
 
     @AppStorage("panelTab") private var tab: Tab = .display
     @ObservedObject private var battery = BatteryMonitor.shared
+    @State private var showsDonate = false
 
     private let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
 
     var body: some View {
         VStack(spacing: 12) {
             header
-            tabBar
-            content
+            if showsDonate {
+                DonateView { showsDonate = false }
+            } else {
+                tabBar
+                content
+            }
             footer
         }
         .padding(14)
         .frame(width: 400)
         .onAppear { battery.observe("panel") }
-        .onDisappear { battery.stopObserving("panel") }
+        .onDisappear {
+            battery.stopObserving("panel")
+            showsDonate = false
+        }
     }
 
     private var header: some View {
@@ -135,6 +143,15 @@ struct PanelView: View {
             .font(.system(size: 10))
             .foregroundStyle(.secondary)
             .help("Mở trang GitHub của TileDeck")
+            Button {
+                showsDonate.toggle()
+            } label: {
+                Label("Ủng hộ", systemImage: showsDonate ? "heart.fill" : "heart")
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(.pink)
+            .help("Ủng hộ TileDeck qua VietQR")
             Spacer()
             Button {
                 PermissionsWindow.shared.show()

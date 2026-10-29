@@ -15,6 +15,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Library/LaunchDaemons"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp Resources/Donate.png "$APP/Contents/Resources/Donate.png"
 cp "$BIN_DIR/TileDeck" "$APP/Contents/MacOS/TileDeck"
 # The privileged fan helper, registered with launchd through SMAppService.
 cp "$BIN_DIR/TileDeckHelper" "$APP/Contents/MacOS/TileDeckHelper"
@@ -24,8 +25,11 @@ if [[ "$CONFIG" == "release" ]]; then
 fi
 
 # A stable signing identity keeps the Accessibility permission across rebuilds;
-# ad-hoc signing (-) makes macOS ask again after every build.
-IDENTITY="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')}"
+# ad-hoc signing (-) makes macOS ask again after every build. Developer ID comes
+# first so local builds match the released app and keep the same permissions.
+identity() { security find-identity -v -p codesigning | awk -F'"' "/$1/ {print \$2; exit}"; }
+IDENTITY="${CODESIGN_IDENTITY:-$(identity "Developer ID Application")}"
+IDENTITY="${IDENTITY:-$(identity "Apple Development")}"
 # Notarization requires a secure timestamp, which Developer ID signing provides.
 TIMESTAMP="--timestamp=none"
 [[ "$IDENTITY" == Developer\ ID* ]] && TIMESTAMP="--timestamp"

@@ -1,4 +1,5 @@
 import SwiftUI
+import Vision
 import XCTest
 @testable import TileDeck
 
@@ -91,5 +92,23 @@ final class LogicTests: XCTestCase {
         } else {
             XCTAssertNil(WindowTiler.target(for: .nextDisplay, windowFrame: window))
         }
+    }
+
+    // MARK: Donate
+
+    /// The bundled VietQR must pay TileDeck's account at TPBank (NAPAS BIN 970423).
+    func testDonateQRPaysTheRightAccount() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Resources/Donate.png")
+        let image = try XCTUnwrap(NSImage(contentsOf: url)?.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let request = VNDetectBarcodesRequest()
+        request.symbologies = [.qr]
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        let payload = try XCTUnwrap(request.results?.first?.payloadStringValue)
+        XCTAssertTrue(payload.hasPrefix("000201"), "an EMVCo payment code")
+        XCTAssertTrue(payload.contains("A000000727"), "NAPAS VietQR")
+        XCTAssertTrue(payload.contains("0006970423"), "TPBank")
+        XCTAssertTrue(payload.contains("01\(String(format: "%02d", DonateView.accountNumber.count))\(DonateView.accountNumber)"))
     }
 }
