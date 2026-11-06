@@ -3,8 +3,11 @@ import SwiftUI
 struct SwitcherView: View {
     @ObservedObject var model: SwitcherModel
     let choose: (Int) -> Void
+    @State private var hovered: Int?
 
     private static let cardWidth: CGFloat = 190
+    /// Room for a preview inside a card, in points; captures are made at twice this.
+    static let previewSize = CGSize(width: 168, height: 104)
     private static let maxColumns = 6
 
     var body: some View {
@@ -15,12 +18,13 @@ struct SwitcherView: View {
                     Button {
                         choose(index)
                     } label: {
-                        card(window, isSelected: index == model.selection)
+                        card(window, isSelected: index == model.selection, isHovered: index == hovered)
                     }
                     .buttonStyle(CardPressStyle())
-                    // The mouse picks a window just like Tab does, so the highlight always shows what a click will open.
+                    // Only a click picks a window: a mouse passing over a card must not
+                    // change what releasing ⌘ opens. Hover just lightly marks the card.
                     .onHover { inside in
-                        if inside { model.selection = index }
+                        if inside { hovered = index } else if hovered == index { hovered = nil }
                     }
                 }
             }
@@ -53,7 +57,7 @@ struct SwitcherView: View {
         }
     }
 
-    private func card(_ window: SwitcherWindow, isSelected: Bool) -> some View {
+    private func card(_ window: SwitcherWindow, isSelected: Bool, isHovered: Bool) -> some View {
         VStack(spacing: 6) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8).fill(.primary.opacity(0.06))
@@ -73,7 +77,7 @@ struct SwitcherView: View {
                         .padding(6)
                 }
             }
-            .frame(height: 112)
+            .frame(height: Self.previewSize.height + 8)
 
             HStack(spacing: 5) {
                 if let icon = window.icon {
@@ -88,9 +92,10 @@ struct SwitcherView: View {
         }
         .padding(7)
         .frame(width: Self.cardWidth)
-        .background(isSelected ? Color.accentColor.opacity(0.28) : .clear, in: RoundedRectangle(cornerRadius: 11))
+        .background(isSelected ? Color.accentColor.opacity(0.28) : isHovered ? Color.primary.opacity(0.08) : .clear,
+                    in: RoundedRectangle(cornerRadius: 11))
         .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2.5))
-        .opacity(isSelected ? 1 : 0.8)
+        .opacity(isSelected || isHovered ? 1 : 0.8)
         .contentShape(Rectangle())
         .animation(.easeOut(duration: 0.08), value: isSelected)
     }

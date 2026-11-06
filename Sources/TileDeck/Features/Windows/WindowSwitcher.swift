@@ -22,7 +22,10 @@ struct SwitcherWindow: Identifiable {
 final class WindowSwitcher: ObservableObject {
     static let shared = WindowSwitcher()
     private static let defaultsKey = "windowSwitcher"
-    private static let showDelay: TimeInterval = 0.12
+    private static let showDelay: TimeInterval = 0.08
+    /// How long the last previews are kept after the switcher closes, so
+    /// switching back and forth shows them at once (each capture takes ~25 ms).
+    private static let previewCacheLifetime: TimeInterval = 15
 
     @Published private(set) var isEnabled: Bool
 
@@ -30,9 +33,13 @@ final class WindowSwitcher: ObservableObject {
         self?.handle(type, event) ?? Unmanaged.passUnretained(event)
     }
     private var model: SwitcherModel?
+    /// Kept between sessions (hidden): building it takes longer than showing it.
     private var panel: NSPanel?
+    private var host: FirstClickHostingView<SwitcherView>?
     private var showWork: DispatchWorkItem?
     private var previewTask: Task<Void, Never>?
+    private var previewCache: [CGWindowID: CGImage] = [:]
+    private var previewCacheExpiry: DispatchWorkItem?
 
     private init() {
         isEnabled = UserDefaults.standard.bool(forKey: Self.defaultsKey)
@@ -63,6 +70,10 @@ final class WindowSwitcher: ObservableObject {
         } else {
             tap.stop()
             cancel()
+            // Nothing of the switcher stays in memory while it's off.
+            panel = nil
+            host = nil
+            previewCache = [:]
             setNativeSwitcher(enabled: true)
         }
     }
@@ -123,10 +134,15 @@ final class WindowSwitcher: ObservableObject {
         let windows = Self.collectWindows()
         guard !windows.isEmpty else { return }
         let model = SwitcherModel(windows: windows)
+        model.previews = previewCache.filter { id, _ in windows.contains { $0.id == id } }
+        previewCacheExpiry?.cancel()
         model.selection = reverse ? windows.count - 1 : min(1, windows.count - 1)
         self.model = model
         // ⌘` steps back inside our switcher, so macOS's "next window of this app" must not fire meanwhile.
         _ = SkyLight.setSymbolicHotKey?(SymbolicHotKey.commandKeyAboveTab, false)
+        // Capturing takes about as long as the show delay, so start now and the
+        // previews are mostly ready when the panel appears.
+        loadPreviews(for: model)
 
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.showPanel() }
@@ -148,7 +164,16 @@ final class WindowSwitcher: ObservableObject {
         previewTask?.cancel()
         previewTask = nil
         panel?.orderOut(nil)
-        panel = nil
+        if let model {
+            previewCache = model.previews
+            // The hidden panel still shows this model: drop its images, after the switch itself.
+            DispatchQueue.main.async { model.previews = [:] }
+            let expiry = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated { self?.previewCache = [:] }
+            }
+            previewCacheExpiry = expiry
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.previewCacheLifetime, execute: expiry)
+        }
         model = nil
     }
 
@@ -174,19 +199,26 @@ final class WindowSwitcher: ObservableObject {
     // MARK: Panel
 
     private func showPanel() {
-        guard let model, panel == nil else { return }
-        let panel = NSPanel(contentRect: .zero, styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
-        panel.level = .popUpMenu
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.acceptsMouseMovedEvents = true
-        panel.contentView = FirstClickHostingView(rootView: SwitcherView(model: model) { [weak self] index in self?.select(index) })
-        self.panel = panel
+        guard let model else { return }
+        let view = SwitcherView(model: model) { [weak self] index in self?.select(index) }
+        if let host {
+            host.rootView = view
+        } else {
+            let panel = NSPanel(contentRect: .zero, styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
+            panel.level = .popUpMenu
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = true
+            panel.acceptsMouseMovedEvents = true
+            let host = FirstClickHostingView(rootView: view)
+            panel.contentView = host
+            self.panel = panel
+            self.host = host
+        }
+        guard let panel else { return }
         resizePanel()
         panel.orderFrontRegardless()
-        loadPreviews(for: model)
     }
 
     private func resizePanel() {
@@ -197,19 +229,25 @@ final class WindowSwitcher: ObservableObject {
         panel.setFrame(NSRect(x: area.midX - size.width / 2, y: area.midY - size.height / 2, width: size.width, height: size.height), display: true)
     }
 
-    /// One small capture per window, only while the panel is visible. Needs Screen Recording; without it the cards show app icons.
+    /// One small capture per window, at the size the card shows it. Needs
+    /// Screen Recording; without it the cards show app icons. Results are handed
+    /// to the panel in a few batches: each update redraws every card.
     private func loadPreviews(for model: SwitcherModel) {
         guard hasScreenRecording else { return }
-        let ids = Set(model.windows.map(\.id))
+        let order = model.windows.map(\.id)
+        let room = SwitcherView.previewSize
         previewTask = Task { [weak model] in
             guard let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false) else { return }
+            let byID = Dictionary(content.windows.map { ($0.windowID, $0) }, uniquingKeysWith: { first, _ in first })
             await withTaskGroup(of: (CGWindowID, CGImage?).self) { group in
-                for window in content.windows where ids.contains(window.windowID) {
+                // Captures run one after another, so the first cards go first.
+                for window in order.compactMap({ byID[$0] }) {
                     group.addTask {
                         let configuration = SCStreamConfiguration()
-                        let scale = min(1, 360 / max(window.frame.width, 1)) * 2
-                        configuration.width = max(Int(window.frame.width * scale), 1)
-                        configuration.height = max(Int(window.frame.height * scale), 1)
+                        let size = window.frame.size
+                        let scale = min(room.width / max(size.width, 1), room.height / max(size.height, 1), 1) * 2
+                        configuration.width = max(Int(size.width * scale), 1)
+                        configuration.height = max(Int(size.height * scale), 1)
                         configuration.showsCursor = false
                         configuration.ignoreShadowsSingleWindow = true
                         let filter = SCContentFilter(desktopIndependentWindow: window)
@@ -217,10 +255,18 @@ final class WindowSwitcher: ObservableObject {
                         return (window.windowID, image)
                     }
                 }
+                var batch: [CGWindowID: CGImage] = [:]
+                var lastFlush = ContinuousClock.now
                 for await (id, image) in group {
-                    guard !Task.isCancelled, let image else { continue }
-                    await MainActor.run { model?.previews[id] = image }
+                    guard !Task.isCancelled else { return }
+                    if let image { batch[id] = image }
+                    if ContinuousClock.now - lastFlush > .milliseconds(100) {
+                        model?.previews.merge(batch) { $1 }
+                        batch = [:]
+                        lastFlush = .now
+                    }
                 }
+                model?.previews.merge(batch) { $1 }
             }
         }
     }
