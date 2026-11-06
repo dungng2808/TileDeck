@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-/// The XPC contract between TileDeck and its privileged fan helper.
+/// The XPC contract between TileDeck and its privileged helper (fans and charging).
 /// Every reply carries an error message, or nil on success.
 @objc public protocol FanHelperProtocol {
     func version(reply: @escaping (String) -> Void)
@@ -9,12 +9,17 @@ import Security
     func setFanSpeed(_ index: Int, rpm: Double, reply: @escaping (String?) -> Void)
     func setFanAutomatic(_ index: Int, reply: @escaping (String?) -> Void)
     func resetAllFans(reply: @escaping (String?) -> Void)
+    /// Keeps the battery between `lower` and `upper` percent through the
+    /// firmware's charge range; the adapter goes on powering the Mac.
+    func setChargeLimit(upper: Int, lower: Int, reply: @escaping (String?) -> Void)
+    /// Back to the firmware's normal charging.
+    func resetCharging(reply: @escaping (String?) -> Void)
 }
 
 public enum FanHelper {
     public static let machService = "com.dungng.tiledeck.helper"
     public static let plistName = "com.dungng.tiledeck.helper.plist"
-    public static let version = "2"
+    public static let version = "3"
 
     /// What the helper demands of a client: TileDeck itself, signed by the same team as the helper.
     public static var clientRequirement: String { requirement(identifier: "com.dungng.tiledeck") }

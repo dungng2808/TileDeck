@@ -11,6 +11,9 @@ final class BatteryMonitor: ObservableObject {
         var onAC = true
         var hasBattery = false
         var percent = 0
+        /// The charge the firmware itself works with (raw capacity over raw maximum),
+        /// rounded up. macOS shows a smoothed figure that runs a few percent higher near full.
+        var rawPercent = 0
         var isCharging = false
         var isFull = false
         /// Positive while charging, negative while discharging.
@@ -78,6 +81,11 @@ final class BatteryMonitor: ObservableObject {
 
         snapshot.hasBattery = true
         snapshot.percent = int("CurrentCapacity") ?? 0
+        if let raw = int("AppleRawCurrentCapacity"), let rawMax = int("AppleRawMaxCapacity"), rawMax > 0 {
+            snapshot.rawPercent = (raw * 100 + rawMax - 1) / rawMax
+        } else {
+            snapshot.rawPercent = snapshot.percent
+        }
         snapshot.isCharging = battery["IsCharging"] as? Bool ?? false
         snapshot.isFull = battery["FullyCharged"] as? Bool ?? false
         snapshot.batteryWatts = Double(int("Voltage") ?? 0) * Double(int("InstantAmperage") ?? 0) / 1_000_000

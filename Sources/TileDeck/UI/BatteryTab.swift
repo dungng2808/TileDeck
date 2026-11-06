@@ -27,6 +27,8 @@ struct BatteryTab: View {
 
     @ObservedObject private var monitor = BatteryMonitor.shared
     @ObservedObject private var alerts = BatteryAlerts.shared
+    @ObservedObject private var limiter = ChargeLimiter.shared
+    @ObservedObject private var fans = FanController.shared
     @AppStorage("batterySection") private var section: Section = .power
 
     private var battery: BatteryMonitor.Snapshot { monitor.snapshot }
@@ -90,16 +92,31 @@ struct BatteryTab: View {
                          caption: temperatureStatus.text, valueColor: temperatureStatus.color)
                 StatTile(icon: "bolt.fill", tint: .orange, title: "Củ sạc",
                          value: battery.adapterWatts.map { "\($0)W" } ?? "—",
-                         caption: battery.adapterName ?? "Chưa cắm")
+                         caption: adapterCaption,
+                         valueColor: adapterTooWeak ? .orange : .primary)
             }
         }
+    }
+
+    /// The adapter delivers less than the Mac is using, so the battery makes up the rest.
+    private var adapterTooWeak: Bool {
+        guard battery.onAC, let adapter = battery.adapterWatts, let load = battery.systemWatts else { return false }
+        return Double(adapter) < load
+    }
+
+    private var adapterCaption: String {
+        guard battery.onAC else { return "Chưa cắm" }
+        if adapterTooWeak { return "Yếu hơn máy cần" }
+        return battery.adapterName ?? "Đã cắm"
     }
 
     private var powerStatus: (text: String, icon: String, color: Color) {
         let watts = String(format: "%.1fW", abs(battery.batteryWatts))
         if !battery.onAC { return ("Đang xả \(watts)", "battery.50percent", .secondary) }
         if battery.isCharging { return ("Đang sạc \(watts)", "bolt.fill", .green) }
-        return ("\(watts) (Đã cắm sạc)", "powerplug.fill", .orange)
+        // Plugged in yet draining: the adapter can't keep up with the load.
+        if battery.batteryWatts < -1 { return ("Sạc không đủ, pin bù \(watts)", "exclamationmark.triangle.fill", .orange) }
+        return ("Chạy bằng điện sạc, pin nghỉ", "powerplug.fill", .blue)
     }
 
     private var barColors: [Color] {
@@ -144,20 +161,78 @@ struct BatteryTab: View {
         .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
     }
 
+    /// Limit choice, what the firmware is doing right now, and the helper if it's missing.
+    @ViewBuilder
+    private var chargeLimitDetails: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 4) {
+                Text("Dừng sạc ở").font(.system(size: 10)).foregroundStyle(.secondary)
+                ForEach(ChargeLimiter.choices, id: \.self) { value in
+                    Chip(title: "\(value)%", isSelected: limiter.limit == value) { limiter.setLimit(value) }
+                }
+            }
+
+            if limiter.isEnabled {
+                Label(chargeLimitStatus, systemImage: battery.onAC ? "powerplug.fill" : "battery.75percent")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if fans.helperState != .ready {
+                HStack(spacing: 8) {
+                    Text(fans.helperState == .needsApproval
+                         ? "Bật TileDeck trong Cài đặt › Mục đăng nhập để khóa sạc."
+                         : "Khóa sạc cần trình trợ giúp chạy nền (dùng chung với phần Quạt).")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    Button(fans.helperState == .needsApproval ? "Mở Cài đặt" : "Cài đặt") {
+                        fans.helperState == .needsApproval ? fans.openApprovalSettings() : fans.installHelper()
+                    }
+                    .controlSize(.small)
+                }
+            }
+
+            if let error = limiter.lastError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .onAppear { fans.refreshHelperState() }
+    }
+
+    private var chargeLimitStatus: String {
+        let hold = limiter.holdingAt ?? limiter.limit
+        if hold > limiter.limit {
+            return "Pin đang trên \(limiter.limit)%: giữ ở \(hold)% và hạ dần mức giữ khi bạn dùng pin, không xả pin khi cắm sạc."
+        }
+        // The firmware counts the raw charge, which macOS shows a few percent higher.
+        let note = battery.percent > battery.rawPercent ? " macOS có thể hiện cao hơn vài %." : ""
+        if !battery.onAC { return "Khi cắm sạc, pin sẽ sạc tới \(hold)% rồi dừng.\(note)" }
+        if battery.isCharging { return "Đang sạc tới \(hold)% (pin thật đang \(battery.rawPercent)%) rồi dừng.\(note)" }
+        return "Đang giữ pin ở \(hold)%, máy chạy bằng điện từ cục sạc.\(note)"
+    }
+
     private var powerSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             FeatureHeader(
                 icon: "lock.shield",
-                title: "Khóa sạc ở 80% (chạy điện trực tiếp)",
-                subtitle: "Cắm sạc liên tục mà không chai pin (SMC Bypass)",
-                isOn: .constant(false),
+                title: "Khóa sạc ở \(limiter.limit)% (chạy điện trực tiếp)",
+                subtitle: "Cắm sạc liên tục mà không chai pin, chỉ giữ khi TileDeck đang chạy",
+                isOn: Binding(get: { limiter.isEnabled }, set: { limiter.setEnabled($0) }),
                 tint: .blue
             )
             .disabled(!ChargeControl.canLimitCharge)
 
-            if !ChargeControl.canLimitCharge {
+            if ChargeControl.canLimitCharge {
+                chargeLimitDetails
+            } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Label("Firmware của máy này đã bỏ khóa SMC dùng để ngắt sạc, nên chưa thể khóa sạc an toàn. Hãy bật \"Sạc pin được tối ưu hóa\" của macOS để thay thế.",
+                    Label("Firmware của máy này không có khóa giới hạn sạc, nên chưa thể khóa sạc an toàn. Hãy bật \"Sạc pin được tối ưu hóa\" của macOS để thay thế.",
                           systemImage: "info.circle.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)

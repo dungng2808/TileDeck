@@ -42,7 +42,7 @@ final class FanController: ObservableObject {
     @Published private(set) var sensorReadings: [String: Double] = [:]
 
     private let service = SMAppService.daemon(plistName: FanHelper.plistName)
-    private var connection: NSXPCConnection?
+    private lazy var helper = HelperConnection { [weak self] error in self?.lastError = error }
     private var curveTimer: Timer?
     private var lastCurveTarget: [Int: Double] = [:]
     private var smoothedTemperature: [String: Double] = [:]
@@ -84,48 +84,6 @@ final class FanController: ObservableObject {
 
     func openApprovalSettings() {
         SMAppService.openSystemSettingsLoginItems()
-    }
-
-    private func makeConnection() -> NSXPCConnection {
-        if let connection { return connection }
-        let connection = NSXPCConnection(machServiceName: FanHelper.machService, options: .privileged)
-        connection.remoteObjectInterface = NSXPCInterface(with: FanHelperProtocol.self)
-        // Talk only to our own helper, never to something squatting on the service name.
-        connection.setCodeSigningRequirement(FanHelper.helperRequirement)
-        connection.invalidationHandler = { [weak self, weak connection] in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    if let self, self.connection === connection { self.connection = nil }
-                }
-            }
-        }
-        connection.resume()
-        self.connection = connection
-        return connection
-    }
-
-    /// Sends one request. If the helper was just exiting (it quits after handing
-    /// the fans back), the message is lost with the connection, so it is sent
-    /// once more on a fresh connection.
-    private func send(retry: Bool = true, _ request: @escaping (FanHelperProtocol, @escaping (String?) -> Void) -> Void) {
-        let connection = makeConnection()
-        let proxy = connection.remoteObjectProxyWithErrorHandler { [weak self] error in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    if self.connection === connection { self.connection = nil }
-                    if retry {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.send(retry: false, request) }
-                    } else {
-                        self.lastError = "Không kết nối được trình trợ giúp: \(error.localizedDescription)"
-                    }
-                }
-            }
-        } as? FanHelperProtocol
-        guard let proxy else { return }
-        request(proxy) { [weak self] error in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.lastError = error } }
-        }
     }
 
     // MARK: Modes
@@ -200,27 +158,27 @@ final class FanController: ObservableObject {
     /// fan back to macOS when its client leaves. Waiting for it here could hold
     /// up quitting for seconds while the SMC settles.
     func restoreAll() {
-        connection?.invalidate()
+        helper.invalidate()
     }
 
     private func apply(_ fan: Int) {
         guard helperState == .ready else { return }
         switch mode(for: fan) {
         case .automatic:
-            send { helper, done in
+            helper.send { helper, done in
                 helper.setFanAutomatic(fan) { error in
                     done(error)
                     // Nothing left to hold: let the helper go once it has answered.
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
                             let controller = FanController.shared
-                            if !controller.isControlling { controller.connection?.invalidate() }
+                            if !controller.isControlling { controller.helper.invalidate() }
                         }
                     }
                 }
             }
         case .fixed(let rpm):
-            send { helper, done in helper.setFanSpeed(fan, rpm: rpm, reply: done) }
+            helper.send { helper, done in helper.setFanSpeed(fan, rpm: rpm, reply: done) }
         case .temperature:
             evaluateCurves()
         }
@@ -274,7 +232,7 @@ final class FanController: ObservableObject {
                         }
                         target = target.rounded()
                         self.lastCurveTarget[curve.fan] = target
-                        self.send { helper, done in helper.setFanSpeed(curve.fan, rpm: target, reply: done) }
+                        self.helper.send { helper, done in helper.setFanSpeed(curve.fan, rpm: target, reply: done) }
                     }
                 }
             }

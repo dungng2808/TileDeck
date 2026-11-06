@@ -2,10 +2,10 @@ import CSMC
 import FanHelperShared
 import Foundation
 
-/// TileDeck's privileged fan helper. launchd starts it on demand when TileDeck
-/// connects; it only writes fan mode and target-speed keys, only for a
-/// TileDeck signed by our team, and hands every fan back to macOS's automatic
-/// control as soon as no TileDeck is connected.
+/// TileDeck's privileged helper. launchd starts it on demand when TileDeck
+/// connects; it only writes fan mode and target-speed keys and the firmware's
+/// charge-range keys, only for a TileDeck signed by our team, and hands fans
+/// and charging back to macOS as soon as no TileDeck is connected.
 
 final class FanService: NSObject, FanHelperProtocol {
     private let lock = NSLock()
@@ -40,6 +40,40 @@ final class FanService: NSObject, FanHelperProtocol {
 
     func resetAllFans(reply: @escaping (String?) -> Void) {
         reply(resetAll())
+    }
+
+    /// The firmware stops charging above `upper` (bfD0) and resumes below
+    /// `lower` (bfE0) while the charge-range mode (bfF0) is 2; the adapter
+    /// keeps powering the Mac. The range is written with the mode off, then
+    /// switched on; any failure puts normal charging back.
+    func setChargeLimit(upper: Int, lower: Int, reply: @escaping (String?) -> Void) {
+        reply(withSMC { smc in
+            guard (20...100).contains(upper), (10..<upper).contains(lower) else { return "Mức sạc không hợp lệ" }
+            let steps: [(key: String, bytes: [UInt8])] = [
+                ("bfF0", [ChargeRange.normal]),
+                ("bfD0", ChargeRange.percentBytes(upper)),
+                ("bfE0", ChargeRange.percentBytes(lower)),
+                ("bfF0", [ChargeRange.limited]),
+            ]
+            for step in steps where !smc.writeVerified(step.key, step.bytes) {
+                _ = smc.write("bfF0", [ChargeRange.normal])
+                return "Firmware không cho ghi \(step.key), máy này chưa khoá sạc được"
+            }
+            return nil
+        })
+    }
+
+    func resetCharging(reply: @escaping (String?) -> Void) {
+        reply(releaseCharging())
+    }
+
+    @discardableResult
+    func releaseCharging() -> String? {
+        withSMC { smc in
+            // Nothing to undo on a Mac without the keys, or one already charging normally.
+            guard let mode = smc.uint8("bfF0"), mode != ChargeRange.normal else { return nil }
+            return smc.writeVerified("bfF0", [ChargeRange.normal]) ? nil : "Không trả sạc pin về bình thường"
+        }
     }
 
     /// Reads the real state rather than remembering it, so a helper that
@@ -127,10 +161,33 @@ final class SMCSession {
         return low...high
     }
 
-    /// Only fan mode, fan target and the fan-test switch are ever written.
+    /// Writes, then reads back, since the SMC may accept a write it then ignores.
+    func writeVerified(_ key: String, _ bytes: [UInt8]) -> Bool {
+        var current = [UInt8](repeating: 0, count: 32)
+        var size: UInt32 = 0
+        return write(key, bytes)
+            && smc_read(connection, key, &current, &size) == KERN_SUCCESS
+            && Array(current.prefix(bytes.count)) == bytes
+    }
+
+    /// Only fan mode, fan target, the fan-test switch and the charge range are ever written.
     func write(_ key: String, _ bytes: [UInt8]) -> Bool {
-        guard key == "Ftst" || (key.hasPrefix("F") && (key.hasSuffix("Md") || key.hasSuffix("Tg"))) else { return false }
+        let isFanKey = key == "Ftst" || (key.hasPrefix("F") && (key.hasSuffix("Md") || key.hasSuffix("Tg")))
+        guard isFanKey || ChargeRange.keys.contains(key) else { return false }
         return smc_write(connection, key, bytes, UInt32(bytes.count)) == KERN_SUCCESS
+    }
+}
+
+/// The firmware charge range that replaced the old charge-inhibit keys
+/// (CHTE, CH0B) in the macOS 15.8 / 26.7 firmware: bfD0 and bfE0 hold the
+/// upper and lower percentage as little-endian UInt32, bfF0 the mode.
+enum ChargeRange {
+    static let keys: Set<String> = ["bfD0", "bfE0", "bfF0"]
+    static let normal: UInt8 = 0
+    static let limited: UInt8 = 2
+
+    static func percentBytes(_ percent: Int) -> [UInt8] {
+        withUnsafeBytes(of: UInt32(percent).littleEndian) { Array($0) }
     }
 }
 
@@ -151,11 +208,13 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
         return true
     }
 
-    /// TileDeck quit or crashed: never leave a fan pinned without someone watching temperatures.
+    /// TileDeck quit or crashed: never leave a fan pinned without someone
+    /// watching temperatures, nor charging held with nobody to release it.
     private func clientLeft() {
         connections -= 1
         guard connections <= 0 else { return }
         service.resetAll()
+        service.releaseCharging()
         // A new TileDeck may have connected while the fans were being released.
         guard connections <= 0 else { return }
         // launchd starts the helper again on the next connection.

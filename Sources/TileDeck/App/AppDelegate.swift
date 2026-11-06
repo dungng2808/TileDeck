@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MouseChord.shared.activateIfNeeded()
         MenuBarManager.shared.activateIfNeeded()
         FanController.shared.activateIfNeeded()
+        ChargeLimiter.shared.activateIfNeeded()
         AppVolume.shared.activateIfNeeded()
         PermissionsWindow.shared.showOnFirstLaunch()
     }
@@ -28,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ProcessFreezer.shared.thawAll()
         WindowSwitcher.shared.restoreNativeSwitcher()
         FanController.shared.restoreAll()
+        ChargeLimiter.shared.restoreOnQuit()
         AppVolume.shared.stopAll()
     }
 }
