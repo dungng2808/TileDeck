@@ -18,6 +18,19 @@ final class LogicTests: XCTestCase {
         XCTAssertEqual(UpdateChecker.clean(" v1.2.3"), "1.2.3")
     }
 
+    func testOnlyThisRepositorysReleasesAreDownloaded() {
+        let trusted = URL(string: "https://github.com/dungng2808/TileDeck/releases/download/v0.1.3/TileDeck-0.1.3.zip")!
+        XCTAssertTrue(AppInstaller.isTrustedPackage(trusted))
+        for untrusted in [
+            "http://github.com/dungng2808/TileDeck/releases/download/v0.1.3/TileDeck-0.1.3.zip",
+            "https://github.com/someone/TileDeck/releases/download/v0.1.3/TileDeck-0.1.3.zip",
+            "https://example.com/dungng2808/TileDeck/releases/download/v0.1.3/TileDeck-0.1.3.zip",
+            "https://github.com.example.com/dungng2808/TileDeck/releases/download/v0.1.3/TileDeck-0.1.3.zip",
+        ] {
+            XCTAssertFalse(AppInstaller.isTrustedPackage(URL(string: untrusted)!), untrusted)
+        }
+    }
+
     // MARK: Clipboard
 
     func testClipboardKinds() {

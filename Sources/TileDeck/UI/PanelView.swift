@@ -177,18 +177,29 @@ private struct UpdateButton: View {
     var body: some View {
         switch checker.state {
         case .available(let version, _):
-            Button("Tải bản \(version)") { checker.openDownload() }
+            Button("Cập nhật lên \(version)") { checker.installUpdate() }
                 .controlSize(.small)
                 .buttonStyle(.borderedProminent)
+                .help("Tải, kiểm tra chữ ký rồi cài và mở lại TileDeck")
         case .checking:
-            HStack(spacing: 4) {
-                ProgressView().controlSize(.mini)
-                Text("Đang kiểm tra…").font(.system(size: 10)).foregroundStyle(.secondary)
-            }
+            progress("Đang kiểm tra…")
+        case .installing(_, let step):
+            progress(step)
+        case .installFailed(_, let reason):
+            Button("Cập nhật lỗi · tải thủ công") { checker.openDownload() }
+                .controlSize(.small)
+                .help(reason)
         default:
             Button(label) { checker.check() }
                 .controlSize(.small)
                 .help("Phiên bản hiện tại: \(checker.currentVersion)")
+        }
+    }
+
+    private func progress(_ text: String) -> some View {
+        HStack(spacing: 4) {
+            ProgressView().controlSize(.mini)
+            Text(text).font(.system(size: 10)).foregroundStyle(.secondary)
         }
     }
 

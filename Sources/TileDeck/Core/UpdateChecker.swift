@@ -2,6 +2,7 @@ import AppKit
 
 /// Checks GitHub Releases for a newer TileDeck. On demand, plus at most once a
 /// day when the panel opens; one small HTTPS request, nothing in the background.
+/// A newer release is installed in place by AppInstaller when the user asks.
 @MainActor
 final class UpdateChecker: ObservableObject {
     enum State: Equatable {
@@ -11,13 +12,17 @@ final class UpdateChecker: ObservableObject {
         case available(version: String, url: URL)
         case noReleases
         case failed
+        case installing(version: String, step: String)
+        case installFailed(url: URL, reason: String)
     }
 
     static let shared = UpdateChecker()
-    static let repository = "dungng2808/TileDeck"
+    nonisolated static let repository = "dungng2808/TileDeck"
     private static let lastCheckKey = "updateLastCheck"
 
     @Published private(set) var state: State = .idle
+    /// The newer release's zip, when it has one that can be installed in place.
+    private var package: URL?
 
     let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
 
@@ -43,26 +48,67 @@ final class UpdateChecker: ObservableObject {
 
     private func finish(status: Int, release: Release?) {
         UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey)
+        package = nil
         if status == 404 {
             state = .noReleases
         } else if let release, let url = URL(string: release.htmlURL) {
-            state = Self.isNewer(release.tagName, than: currentVersion) ? .available(version: Self.clean(release.tagName), url: url) : .upToDate
+            let version = Self.clean(release.tagName)
+            guard Self.isNewer(release.tagName, than: currentVersion) else { return state = .upToDate }
+            package = release.assets
+                .first { $0.name == "TileDeck-\(version).zip" }
+                .flatMap { URL(string: $0.downloadURL) }
+                .flatMap { AppInstaller.isTrustedPackage($0) ? $0 : nil }
+            state = .available(version: version, url: url)
         } else {
             state = .failed
         }
     }
 
     func openDownload() {
-        if case .available(_, let url) = state { NSWorkspace.shared.open(url) }
+        switch state {
+        case .available(_, let url), .installFailed(let url, _): NSWorkspace.shared.open(url)
+        default: break
+        }
+    }
+
+    /// Downloads, checks and installs the newer release, then relaunches.
+    /// Falls back to the release page when it can't be done in place.
+    func installUpdate() {
+        guard case .available(let version, let page) = state else { return }
+        guard let package, AppInstaller.canInstall else { return openDownload() }
+        let target = Bundle.main.bundleURL
+        state = .installing(version: version, step: "Đang tải…")
+        Task {
+            do {
+                try await AppInstaller.install(from: package, version: version, replacing: target) { [weak self] step in
+                    self?.state = .installing(version: version, step: step)
+                }
+                AppInstaller.relaunch(target)
+            } catch {
+                state = .installFailed(url: page, reason: error.localizedDescription)
+            }
+        }
     }
 
     private struct Release: Decodable {
         let tagName: String
         let htmlURL: String
+        let assets: [Asset]
+
+        struct Asset: Decodable {
+            let name: String
+            let downloadURL: String
+
+            enum CodingKeys: String, CodingKey {
+                case name
+                case downloadURL = "browser_download_url"
+            }
+        }
 
         enum CodingKeys: String, CodingKey {
             case tagName = "tag_name"
             case htmlURL = "html_url"
+            case assets
         }
     }
 
