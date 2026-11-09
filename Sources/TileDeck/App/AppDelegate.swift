@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WindowSwitcher.shared.activateIfNeeded()
         WindowTiler.shared.activateIfNeeded()
         ClipboardStore.shared.activateIfNeeded()
+        ScreenshotTool.shared.activateIfNeeded()
         MouseChord.shared.activateIfNeeded()
         MenuBarManager.shared.activateIfNeeded()
         FanController.shared.activateIfNeeded()

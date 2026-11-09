@@ -67,6 +67,62 @@ final class HardwareTests: XCTestCase {
         XCTAssertEqual(apps.apps.count, Set(apps.apps.map(\.id)).count)
     }
 
+    /// Drives the real overlay with mouse events and checks the exported pixels.
+    @MainActor
+    func testScreenshotDrawingEndsUpInTheExportedImage() throws {
+        guard let screen = NSScreen.screens.first else { throw XCTSkip("no screen") }
+        let width = Int(screen.frame.width), height = Int(screen.frame.height)
+        let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                              space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+        context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let image = try XCTUnwrap(context.makeImage())
+
+        let palette = ScreenshotPalette()
+        let actions = ScreenshotOverlay.Actions(mayStartSelection: { _ in true }, selectionStarted: { _ in }, copy: {}, save: {},
+                                                undo: {}, redo: {}, close: {})
+        let overlay = ScreenshotOverlay(screen: screen, image: image, palette: palette, actions: actions)
+        let canvas = try XCTUnwrap(overlay.contentView?.subviews.first)
+
+        func mouse(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: y), modifierFlags: [], timestamp: 0,
+                               windowNumber: overlay.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        func drag(from: CGPoint, to: CGPoint) {
+            canvas.mouseDown(with: mouse(.leftMouseDown, from.x, from.y))
+            canvas.mouseDragged(with: mouse(.leftMouseDragged, to.x, to.y))
+            canvas.mouseUp(with: mouse(.leftMouseUp, to.x, to.y))
+        }
+
+        drag(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 300, y: 200))
+        XCTAssertTrue(overlay.hasSelection)
+        palette.tool = .rectangle
+        drag(from: CGPoint(x: 120, y: 120), to: CGPoint(x: 280, y: 180))
+        XCTAssertTrue(overlay.hasMarks)
+
+        func pixel(_ cgImage: CGImage, _ x: Int, _ y: Int) -> (UInt8, UInt8, UInt8) {
+            var data = [UInt8](repeating: 0, count: 4)
+            let probe = CGContext(data: &data, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            probe.draw(cgImage, in: CGRect(x: -x, y: y - cgImage.height + 1, width: cgImage.width, height: cgImage.height))
+            return (data[0], data[1], data[2])
+        }
+        let drawn = try XCTUnwrap(overlay.selectedImage()).image
+        XCTAssertEqual(drawn.width, Int(200 * CGFloat(width) / screen.frame.width))
+        // The rectangle's bottom edge: 20 points above the selection's bottom, in a top-origin image.
+        let onLine = pixel(drawn, 100, 100 - 20)
+        XCTAssertGreaterThan(onLine.0, 200)
+        XCTAssertLessThan(onLine.1, 120, "the red stroke is in the export")
+        XCTAssertEqual(pixel(drawn, 100, 50).1, 255, "and the rest of the picture is untouched")
+
+        overlay.undo()
+        XCTAssertFalse(overlay.hasMarks)
+        XCTAssertEqual(pixel(try XCTUnwrap(overlay.selectedImage()).image, 100, 80).1, 255, "undo removes it")
+        overlay.orderOut(nil)
+    }
+
     @MainActor
     func testBatteryReading() throws {
         let battery = BatteryMonitor.shared

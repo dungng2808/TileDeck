@@ -109,7 +109,7 @@ private struct PermissionsView: View {
                     Self.openSettings("Privacy_Accessibility")
                 }
                 PermissionRow(icon: "rectangle.dashed.badge.record", title: "Ghi màn hình",
-                              purpose: "Ảnh xem trước cửa sổ trong ⌘Tab",
+                              purpose: "Ảnh xem trước cửa sổ trong ⌘Tab, chụp màn hình ⌘⇧1",
                               granted: status.screenRecording) {
                     if !CGRequestScreenCaptureAccess() { Self.openSettings("Privacy_ScreenCapture") }
                 }

@@ -424,7 +424,7 @@ final class WindowSwitcher: ObservableObject {
 
 /// The panel never becomes key (the app you're switching from keeps focus),
 /// so the first click must act right away instead of only focusing the panel.
-private final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
+final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 

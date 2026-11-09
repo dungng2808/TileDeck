@@ -5,6 +5,68 @@ import XCTest
 
 /// Pure logic: no hardware, no system state touched.
 final class LogicTests: XCTestCase {
+    // MARK: Screenshots
+
+    func testScreenshotSelectionStaysOnScreen() {
+        let bounds = CGRect(x: 0, y: 0, width: 1000, height: 600)
+        let dragged = ScreenshotGeometry.selection(from: CGPoint(x: 900, y: 500), to: CGPoint(x: 1200, y: 100), in: bounds)
+        XCTAssertEqual(dragged, CGRect(x: 900, y: 100, width: 100, height: 400))
+
+        let selection = CGRect(x: 100, y: 100, width: 200, height: 100)
+        XCTAssertEqual(ScreenshotGeometry.moved(selection, by: CGVector(dx: -500, dy: 900), in: bounds), CGRect(x: 0, y: 500, width: 200, height: 100))
+        XCTAssertEqual(ScreenshotGeometry.resized(selection, edges: .right, to: CGPoint(x: 50, y: 0), in: bounds),
+                       CGRect(x: 50, y: 100, width: 50, height: 100), "dragging past the opposite edge flips")
+    }
+
+    func testScreenshotGrabbingEdges() {
+        let selection = CGRect(x: 100, y: 100, width: 200, height: 100)
+        XCTAssertEqual(ScreenshotGeometry.edges(at: CGPoint(x: 100, y: 200), of: selection, tolerance: 6), [.left, .top])
+        XCTAssertEqual(ScreenshotGeometry.edges(at: CGPoint(x: 200, y: 96), of: selection, tolerance: 6), [.bottom])
+        XCTAssertEqual(ScreenshotGeometry.edges(at: CGPoint(x: 200, y: 150), of: selection, tolerance: 6), [])
+        XCTAssertEqual(ScreenshotGeometry.edges(at: CGPoint(x: 50, y: 50), of: selection, tolerance: 6), [])
+    }
+
+    func testScreenshotCropsTheRightPixels() {
+        let size = CGSize(width: 1000, height: 600)
+        let selection = CGRect(x: 100, y: 400, width: 200, height: 150)
+        XCTAssertEqual(ScreenshotGeometry.pixelRect(of: selection, in: size, imageWidth: 2000, imageHeight: 1200),
+                       CGRect(x: 200, y: 100, width: 400, height: 300), "image pixels count from the top left at 2x")
+    }
+
+    func testScreenshotToolbarAvoidsScreenEdges() {
+        let bounds = CGRect(x: 0, y: 0, width: 1000, height: 600)
+        let toolbar = CGSize(width: 200, height: 30)
+        XCTAssertEqual(ScreenshotGeometry.toolbarOrigin(for: CGRect(x: 100, y: 200, width: 400, height: 100), toolbar: toolbar, in: bounds),
+                       CGPoint(x: 300, y: 162))
+        XCTAssertEqual(ScreenshotGeometry.toolbarOrigin(for: CGRect(x: 100, y: 0, width: 400, height: 100), toolbar: toolbar, in: bounds),
+                       CGPoint(x: 300, y: 108), "no room below, so it goes above")
+        XCTAssertEqual(ScreenshotGeometry.toolbarOrigin(for: bounds, toolbar: toolbar, in: bounds),
+                       CGPoint(x: 792, y: 8), "a full-screen selection keeps it inside")
+    }
+
+    func testScreenshotClickWithoutDragDrawsNothing() {
+        var line = ScreenshotMark(tool: .line, color: .red, width: 4, start: CGPoint(x: 10, y: 10))
+        XCTAssertFalse(line.isVisible)
+        line.extend(to: CGPoint(x: 40, y: 10))
+        XCTAssertTrue(line.isVisible)
+        XCTAssertEqual(line.points.count, 2, "straight tools only keep their two ends")
+
+        var pen = ScreenshotMark(tool: .pen, color: .red, width: 4, start: CGPoint(x: 10, y: 10))
+        pen.extend(to: CGPoint(x: 20, y: 10))
+        pen.extend(to: CGPoint(x: 20, y: 20))
+        XCTAssertGreaterThan(pen.points.count, 2, "freehand tools keep the whole stroke")
+        XCTAssertNotNil(pen.path)
+    }
+
+    func testScreenshotLongTextWrapsToTheBox() {
+        let font = NSFont.systemFont(ofSize: 22, weight: .semibold)
+        let text = NSAttributedString(string: String(repeating: "chữ dài quá ", count: 12), attributes: [.font: font])
+        let oneLine = ScreenshotMark.textSize(NSAttributedString(string: "chữ", attributes: [.font: font]), maxWidth: 300)
+        let wrapped = ScreenshotMark.textSize(text, maxWidth: 300)
+        XCTAssertLessThanOrEqual(wrapped.width, 300)
+        XCTAssertGreaterThan(wrapped.height, oneLine.height * 2, "long text takes several lines")
+    }
+
     // MARK: Updates
 
     func testVersionComparison() {

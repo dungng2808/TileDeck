@@ -4,6 +4,7 @@ struct ShortcutsTab: View {
     @ObservedObject private var switcher = WindowSwitcher.shared
     @ObservedObject private var tiler = WindowTiler.shared
     @ObservedObject private var clipboard = ClipboardStore.shared
+    @ObservedObject private var screenshot = ScreenshotTool.shared
     @ObservedObject private var chord = MouseChord.shared
     @State private var trusted = AXWindow.isTrusted
 
@@ -15,6 +16,7 @@ struct ShortcutsTab: View {
             switcherCard
             tilingCard
             clipboardCard
+            screenshotCard
             chordCard
         }
         .onAppear { trusted = AXWindow.isTrusted }
@@ -114,6 +116,31 @@ struct ShortcutsTab: View {
                         .padding(.vertical, 6)
                         .foregroundStyle(Color.accentColor)
                         .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var screenshotCard: some View {
+        Card {
+            FeatureHeader(
+                icon: "camera.viewfinder",
+                title: "Chụp vùng màn hình (⌘⇧1)",
+                subtitle: "Kéo chọn vùng, vẽ chú thích, rồi sao chép hoặc lưu",
+                isOn: Binding(get: { screenshot.isEnabled }, set: { screenshot.setEnabled($0) }),
+                tint: .blue
+            )
+            if screenshot.isEnabled {
+                ShortcutRow([("⌘⇧1", "Bắt đầu chụp"), ("⌘C", "Sao chép"), ("⌘S", "Lưu ảnh"), ("Esc", "Thoát")])
+            }
+            if screenshot.isEnabled && !switcher.hasScreenRecording {
+                Button {
+                    switcher.requestScreenRecording()
+                } label: {
+                    Label("Cấp quyền Ghi màn hình để chụp ảnh", systemImage: "rectangle.dashed.badge.record")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.orange)
                 }
                 .buttonStyle(.plain)
             }
