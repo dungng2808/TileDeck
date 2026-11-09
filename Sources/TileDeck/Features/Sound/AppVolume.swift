@@ -7,6 +7,7 @@ private let log = Logger(subsystem: "com.dungng.tiledeck", category: "AppVolume"
 /// Per-app volume. Apps left at 100 % cost nothing; any other level gets a
 /// ProcessTapPlayer that re-plays the app's audio scaled. Levels are kept per
 /// bundle ID and reapplied whenever the app (or the output device) changes.
+/// Core Audio calls and tap setup run on `queue`, never on the main thread.
 @MainActor
 final class AppVolume: ObservableObject {
     struct App: Identifiable, Equatable {
@@ -21,17 +22,40 @@ final class AppVolume: ObservableObject {
     nonisolated static let aggregatePrefix = "com.dungng.tiledeck.appvolume."
     private static let levelsKey = "appVolumeLevels"
     private static let mutedKey = "appVolumeMuted"
-    private static let captureWorkedKey = "appVolumeCaptureWorked"
+    private nonisolated static let captureWorkedKey = "appVolumeCaptureWorked"
 
     @Published private(set) var apps: [App] = []
     @Published private(set) var levels: [String: Float]
     @Published private(set) var muted: Set<String>
     @Published private(set) var lastError: String?
+    /// Something else rerouting app audio would fight TileDeck over the same streams.
+    @Published private(set) var otherMixer: String?
 
-    private var players: [String: ProcessTapPlayer] = [:]
     private var listeners: [() -> Void] = []
     private var playingTimer: Timer?
     private var watchers = 0
+    private var refreshRunning = false
+    private var refreshAgain = false
+    private var pendingSave: DispatchWorkItem?
+    private var icons: [String: NSImage] = [:]
+
+    /// What to play each app at.
+    private struct Mix {
+        let apps: [App]
+        let gains: [String: Float]
+    }
+
+    private struct RunningApp {
+        let pid: pid_t
+        let bundleID: String
+        let name: String?
+    }
+
+    private nonisolated let queue = DispatchQueue(label: "TileDeck.appVolume.control", qos: .userInitiated)
+    /// Only the newest mix is worth applying while a slider is being dragged.
+    private nonisolated let pendingMix = OSAllocatedUnfairLock<Mix?>(initialState: nil)
+    /// Only touched on `queue`.
+    private nonisolated(unsafe) var players: [String: ProcessTapPlayer] = [:]
 
     private init() {
         let defaults = UserDefaults.standard
@@ -45,10 +69,11 @@ final class AppVolume: ObservableObject {
         !muted.isEmpty || levels.values.contains { $0 != 1 }
     }
 
-    /// Something else rerouting app audio would fight TileDeck over the same streams.
-    var otherMixer: String? {
-        let names = ["SoundFlow", "SoundSource", "Background Music", "eqMac"]
-        return NSWorkspace.shared.runningApplications.first { names.contains($0.localizedName ?? "") }?.localizedName
+    func icon(for app: App) -> NSImage {
+        if let icon = icons[app.id] { return icon }
+        let icon = NSRunningApplication(processIdentifier: app.pid)?.icon ?? NSImage()
+        icons[app.id] = icon
+        return icon
     }
 
     // MARK: Lifecycle
@@ -81,9 +106,14 @@ final class AppVolume: ObservableObject {
         if !hasAdjustments { unlisten() }
     }
 
+    /// The taps must be gone before the process is: they mute the apps they capture.
     func stopAll() {
-        players.values.forEach { $0.stop() }
-        players.removeAll()
+        saveNow()
+        pendingMix.withLock { $0 = nil }
+        queue.sync {
+            players.values.forEach { $0.stop() }
+            players.removeAll()
+        }
     }
 
     private func listen() {
@@ -104,20 +134,32 @@ final class AppVolume: ObservableObject {
 
     func setLevel(_ value: Float, for app: String) {
         levels[app] = min(max(value, 0), 1)
-        if value > 0 { muted.remove(app) }
-        save()
+        if value > 0 && muted.contains(app) { muted.remove(app) }
+        saveSoon()
         if hasAdjustments { listen() }
         reconcile()
     }
 
     func toggleMute(_ app: String) {
         if muted.contains(app) { muted.remove(app) } else { muted.insert(app) }
-        save()
+        saveNow()
         if hasAdjustments { listen() }
         reconcile()
     }
 
-    private func save() {
+    /// A dragged slider changes many times a second; only where it stops matters.
+    private func saveSoon() {
+        pendingSave?.cancel()
+        let save = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.saveNow() }
+        }
+        pendingSave = save
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: save)
+    }
+
+    private func saveNow() {
+        pendingSave?.cancel()
+        pendingSave = nil
         UserDefaults.standard.set(levels.mapValues(Double.init), forKey: Self.levelsKey)
         UserDefaults.standard.set(Array(muted), forKey: Self.mutedKey)
     }
@@ -168,17 +210,55 @@ final class AppVolume: ObservableObject {
     // MARK: Apps and taps
 
     func refresh() {
-        apps = Self.audioApps()
+        guard !refreshRunning else {
+            refreshAgain = true
+            return
+        }
+        refreshRunning = true
+        let running = NSWorkspace.shared.runningApplications
+        let mixers = ["SoundFlow", "SoundSource", "Background Music", "eqMac"]
+        let mixer = running.first { mixers.contains($0.localizedName ?? "") }?.localizedName
+        if otherMixer != mixer { otherMixer = mixer }
+        let regular = running.compactMap { app -> RunningApp? in
+            guard app.activationPolicy == .regular, let bundleID = app.bundleIdentifier else { return nil }
+            return RunningApp(pid: app.processIdentifier, bundleID: bundleID, name: app.localizedName)
+        }
+        queue.async { [weak self] in
+            let found = Self.audioApps(among: regular)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.refreshed(found) }
+            }
+        }
+    }
+
+    private func refreshed(_ found: [App]) {
+        refreshRunning = false
+        if apps != found { apps = found }
         reconcile()
+        if refreshAgain {
+            refreshAgain = false
+            refresh()
+        }
     }
 
     private func reconcile() {
+        let gains = Dictionary(apps.map { ($0.id, muted.contains($0.id) ? 0 : level(for: $0.id)) }, uniquingKeysWith: { first, _ in first })
+        let mix = Mix(apps: apps, gains: gains)
+        pendingMix.withLock { $0 = mix }
+        queue.async { [weak self] in self?.applyPendingMix() }
+    }
+
+    private nonisolated func applyPendingMix() {
+        guard let mix = pendingMix.withLock({ pending -> Mix? in
+            defer { pending = nil }
+            return pending
+        }) else { return }
         let outputID: AudioObjectID = CA.get(CA.system, kAudioHardwarePropertyDefaultOutputDevice, default: 0)
         guard let outputUID = CA.string(outputID, kAudioDevicePropertyDeviceUID) else { return }
         var failure: String?
 
-        for app in apps {
-            let gain = muted.contains(app.id) ? 0 : level(for: app.id)
+        for app in mix.apps {
+            let gain = mix.gains[app.id] ?? 1
             if gain == 1 {
                 players.removeValue(forKey: app.id)?.stop()
                 continue
@@ -198,28 +278,33 @@ final class AppVolume: ObservableObject {
             }
         }
         // Apps that stopped using audio altogether.
-        for id in players.keys where !apps.contains(where: { $0.id == id }) {
+        for id in players.keys where !mix.apps.contains(where: { $0.id == id }) {
             players.removeValue(forKey: id)?.stop()
         }
-        lastError = failure
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.lastError != failure else { return }
+                self.lastError = failure
+            }
+        }
     }
 
     /// Audio process objects grouped by the app they belong to: Chrome plays
     /// through "Google Chrome Helper", Safari through a shared WebKit process.
-    private static func audioApps() -> [App] {
+    private nonisolated static func audioApps(among regular: [RunningApp]) -> [App] {
         let me = getpid()
-        let regular = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular && $0.bundleIdentifier != nil }
-        let byPID = Dictionary(regular.map { ($0.processIdentifier, $0) }, uniquingKeysWith: { first, _ in first })
+        let byPID = Dictionary(regular.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
 
-        var grouped: [String: (app: NSRunningApplication, processes: Set<AudioObjectID>, playing: Bool)] = [:]
+        var grouped: [String: (app: RunningApp, processes: Set<AudioObjectID>, playing: Bool)] = [:]
         for object in CA.objects(CA.system, kAudioHardwarePropertyProcessObjectList) {
             let pid: pid_t = CA.get(object, kAudioProcessPropertyPID, default: pid_t(0))
             guard pid > 0, pid != me else { continue }
             let bundleID = CA.string(object, kAudioProcessPropertyBundleID) ?? ""
             let owner = byPID[pid]
-                ?? regular.filter { bundleID.hasPrefix($0.bundleIdentifier! + ".") }.max { $0.bundleIdentifier!.count < $1.bundleIdentifier!.count }
+                ?? regular.filter { bundleID.hasPrefix($0.bundleID + ".") }.max { $0.bundleID.count < $1.bundleID.count }
                 ?? responsiblePID(pid).flatMap { byPID[$0] }
-            guard let owner, let id = owner.bundleIdentifier else { continue }
+            guard let owner else { continue }
+            let id = owner.bundleID
             let playing: UInt32 = CA.get(object, kAudioProcessPropertyIsRunningOutput, default: 0)
             var entry = grouped[id] ?? (owner, [], false)
             entry.processes.insert(object)
@@ -227,7 +312,7 @@ final class AppVolume: ObservableObject {
             grouped[id] = entry
         }
         return grouped.map { id, entry in
-            App(id: id, name: entry.app.localizedName ?? id, pid: entry.app.processIdentifier,
+            App(id: id, name: entry.app.name ?? id, pid: entry.app.pid,
                 processes: entry.processes, isPlaying: entry.playing)
         }
         .sorted { lhs, rhs in
@@ -236,13 +321,13 @@ final class AppVolume: ObservableObject {
     }
 
     private typealias ResponsiblePID = @convention(c) (pid_t) -> pid_t
-    private static let responsibleFunction: ResponsiblePID? = {
+    private nonisolated static let responsibleFunction: ResponsiblePID? = {
         guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_get_pid_responsible_for_pid") else { return nil }
         return unsafeBitCast(symbol, to: ResponsiblePID.self)
     }()
 
     /// The app a helper process works for (e.g. Safari for its WebKit media process).
-    private static func responsiblePID(_ pid: pid_t) -> pid_t? {
+    private nonisolated static func responsiblePID(_ pid: pid_t) -> pid_t? {
         guard let responsible = responsibleFunction?(pid), responsible > 0, responsible != pid else { return nil }
         return responsible
     }

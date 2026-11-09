@@ -105,7 +105,7 @@ private struct DeviceRow: View {
                             .frame(width: 22)
                     }
                     .buttonStyle(.plain)
-                    .disabled(!devices.canMute(output: isOutput))
+                    .disabled(!side.canMute)
                     Slider(value: Binding(get: { Double(side.muted ? 0 : volume) }, set: { devices.setVolume(Float($0), output: isOutput) }), in: 0...1)
                         .controlSize(.small)
                     Text(side.muted ? "Tắt tiếng" : "\(Int((volume * 100).rounded()))%")
@@ -113,7 +113,7 @@ private struct DeviceRow: View {
                         .foregroundStyle(side.muted ? Color.red : Color.primary)
                         .frame(width: 52, alignment: .trailing)
                 }
-            } else {
+            } else if side.current != 0 {
                 Text("Thiết bị này không cho chỉnh âm lượng từ máy (chỉnh bằng nút trên thiết bị).")
                     .font(.system(size: 9.5))
                     .foregroundStyle(.secondary)
@@ -137,7 +137,7 @@ private struct AppVolumeRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(nsImage: NSRunningApplication(processIdentifier: app.pid)?.icon ?? NSImage())
+            Image(nsImage: appVolume.icon(for: app))
                 .resizable()
                 .frame(width: 26, height: 26)
             VStack(alignment: .leading, spacing: 3) {

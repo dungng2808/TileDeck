@@ -7,6 +7,10 @@ private let log = Logger(subsystem: "com.dungng.tiledeck", category: "Brightness
 /// F1/F2 adjust whichever display the cursor is on. On the built-in screen the
 /// keys pass straight through to macOS (native OSD included); on an external
 /// screen TileDeck takes them over.
+///
+/// The tap sees every media key, volume included, and macOS holds each event
+/// until the tap answers, so it runs on its own thread: a busy main thread must
+/// never delay F11/F12.
 @MainActor
 final class BrightnessKeys: ObservableObject {
     static let shared = BrightnessKeys()
@@ -16,7 +20,6 @@ final class BrightnessKeys: ObservableObject {
     @Published private(set) var needsPermission = false
 
     private var tap: CFMachPort?
-    private var source: CFRunLoopSource?
 
     private init() {
         isEnabled = UserDefaults.standard.bool(forKey: Self.defaultsKey)
@@ -62,46 +65,47 @@ final class BrightnessKeys: ObservableObject {
             | CGEventMask(1 << CGEventType.keyDown.rawValue)
             | CGEventMask(1 << CGEventType.keyUp.rawValue)
         log.info("starting event tap")
+        let state = BrightnessTapState()
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: mask,
             callback: brightnessTapCallback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
+            userInfo: Unmanaged.passUnretained(state).toOpaque()
         ) else {
             needsPermission = true
             return
         }
         needsPermission = false
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        state.port = tap
+        state.source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        // The run loop ends, and the thread with it, once `stop()` invalidates the port.
+        let thread = Thread {
+            withExtendedLifetime(state) {
+                CFRunLoopAddSource(CFRunLoopGetCurrent(), state.source, .commonModes)
+                CFRunLoopRun()
+            }
+        }
+        thread.name = "TileDeck.brightnessKeys"
+        thread.qualityOfService = .userInteractive
+        thread.start()
         self.tap = tap
-        self.source = source
     }
 
     private func stop() {
         needsPermission = false
         guard let tap else { return }
         CGEvent.tapEnable(tap: tap, enable: false)
-        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         CFMachPortInvalidate(tap)
         self.tap = nil
-        self.source = nil
     }
+}
 
-    fileprivate func reenable() {
-        if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-    }
-
-    /// Returns true when the event was handled and must not reach macOS.
-    fileprivate func handle(up: Bool, isDown: Bool) -> Bool {
-        let cursorDisplay = DisplayController.displayUnderCursor()
-        log.info("brightness \(up ? "up" : "down", privacy: .public) down=\(isDown) cursorDisplay=\(cursorDisplay ?? 0)")
-        guard let id = cursorDisplay, CGDisplayIsBuiltin(id) == 0 else { return false }
-        if isDown { DisplayController.shared.step(id, up: up) }
-        return true
-    }
+/// Set up before the tap's thread starts, then only read from that thread.
+private final class BrightnessTapState: @unchecked Sendable {
+    var port: CFMachPort?
+    var source: CFRunLoopSource?
 }
 
 private let brightnessUpKeyCode: Int64 = 144
@@ -130,16 +134,33 @@ private func brightnessKey(_ type: CGEventType, _ event: CGEvent) -> (up: Bool, 
     }
 }
 
+/// Uses CoreGraphics only, which is safe away from the main thread.
+private func displayUnderCursor() -> CGDirectDisplayID? {
+    guard let point = CGEvent(source: nil)?.location else { return nil }
+    var display: CGDirectDisplayID = 0
+    var count: UInt32 = 0
+    guard CGGetDisplaysWithPoint(point, 1, &display, &count) == .success, count > 0 else { return nil }
+    return display
+}
+
+/// Runs on the tap's own thread.
 private func brightnessTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refcon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
     let passThrough = Unmanaged.passUnretained(event)
     guard let refcon else { return passThrough }
-    let keys = Unmanaged<BrightnessKeys>.fromOpaque(refcon).takeUnretainedValue()
 
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        MainActor.assumeIsolated { keys.reenable() }
+        let state = Unmanaged<BrightnessTapState>.fromOpaque(refcon).takeUnretainedValue()
+        if let port = state.port { CGEvent.tapEnable(tap: port, enable: true) }
         return passThrough
     }
     guard let key = brightnessKey(type, event) else { return passThrough }
-    let handled = MainActor.assumeIsolated { keys.handle(up: key.up, isDown: key.isDown) }
-    return handled ? nil : passThrough
+    let cursorDisplay = displayUnderCursor()
+    log.info("brightness \(key.up ? "up" : "down", privacy: .public) down=\(key.isDown) cursorDisplay=\(cursorDisplay ?? 0)")
+    guard let id = cursorDisplay, CGDisplayIsBuiltin(id) == 0 else { return passThrough }
+    if key.isDown {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { DisplayController.shared.step(id, up: key.up) }
+        }
+    }
+    return nil
 }

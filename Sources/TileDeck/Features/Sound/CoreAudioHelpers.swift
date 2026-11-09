@@ -58,16 +58,17 @@ enum CA {
         return result
     }
 
-    /// Calls `handler` on the main queue whenever the property changes; returns a token to remove it.
+    /// Calls `handler` on `queue` whenever the property changes; returns a token to remove it.
     static func listen(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
                        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
+                       queue: DispatchQueue = .main,
                        handler: @escaping () -> Void) -> () -> Void {
         var address = address(selector, scope)
         let block: AudioObjectPropertyListenerBlock = { _, _ in handler() }
-        AudioObjectAddPropertyListenerBlock(object, &address, .main, block)
+        AudioObjectAddPropertyListenerBlock(object, &address, queue, block)
         return {
             var address = address
-            AudioObjectRemovePropertyListenerBlock(object, &address, .main, block)
+            AudioObjectRemovePropertyListenerBlock(object, &address, queue, block)
         }
     }
 }

@@ -55,12 +55,14 @@ final class HardwareTests: XCTestCase {
         let devices = AudioDevices.shared
         devices.start()
         defer { devices.stop() }
+        spinRunLoop(until: { !devices.output.devices.isEmpty })
         guard !devices.output.devices.isEmpty else { throw XCTSkip("no audio output") }
         XCTAssertTrue(devices.output.devices.contains { $0.id == devices.output.current }, "the default output is in the list")
         XCTAssertFalse(devices.output.devices.contains { $0.uid.hasPrefix(AppVolume.aggregatePrefix) }, "TileDeck's own devices stay hidden")
 
         let apps = AppVolume.shared
         apps.refresh()
+        spinRunLoop(for: 1)
         XCTAssertFalse(apps.apps.contains { $0.id.hasSuffix(".helper") }, "helper processes fold into their app")
         XCTAssertEqual(apps.apps.count, Set(apps.apps.map(\.id)).count)
     }
@@ -95,5 +97,13 @@ final class HardwareTests: XCTestCase {
             guard Date() < deadline else { throw XCTSkip("timed out waiting for hardware readings") }
             try await Task.sleep(for: .milliseconds(50))
         }
+    }
+}
+
+/// Audio state is read away from the main thread and published back to it.
+private func spinRunLoop(for seconds: TimeInterval = 2, until done: () -> Bool = { false }) {
+    let deadline = Date().addingTimeInterval(seconds)
+    while !done() && Date() < deadline {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
     }
 }
