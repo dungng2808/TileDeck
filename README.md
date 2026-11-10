@@ -21,7 +21,7 @@ Viết bằng Swift + AppKit, không dùng thư viện ngoài. Khi rảnh: **0% 
 |---|---|
 | **Màn hình** | Chống sleep (Caffeinate) có hẹn giờ · độ sáng từng màn, kể cả màn ngoài qua DDC · F1/F2 chỉnh màn đang có con trỏ, kèm OSD gốc của macOS · tắt màn / ngắt mềm màn không cần rút cáp |
 | **Pin** | % pin, công suất, độ khỏe, chu kỳ sạc, nhiệt độ, củ sạc · cảnh báo pin nóng / pin yếu khi dùng màn ngoài · Sleep Guard (chặn Dark Wake, tắt Bluetooth khi gập máy) · đóng băng app ngốn CPU · lịch hiệu chuẩn pin |
-| **Phím tắt** | ⌘Tab theo từng cửa sổ, có ảnh xem trước, mọi Space · chia cửa sổ ⌃⌥ + mũi tên, chuyển màn ⌃⌥⌘ + ←/→ · clipboard ⌘⇧C (tìm kiếm, ghim, dán nhanh 1–9) · chụp vùng màn hình ⌘⇧1 (vẽ bút, mũi tên, hình, chữ · ⌘C sao chép, ⌘S lưu) · bấm chuột trái + phải để mở Mission Control |
+| **Phím tắt** | ⌘Tab theo từng cửa sổ, có ảnh xem trước, mọi Space · chia cửa sổ ⌃⌥ + mũi tên, chuyển màn ⌃⌥⌘ + ←/→ · clipboard ⌘⇧C (tìm kiếm, ghim, dán nhanh 1–9) · chụp vùng màn hình ⌘⇧1 (vẽ bút, mũi tên, hình, chữ · ⌘C sao chép, ⌘S lưu) · quay màn hình có tiếng ⌘⇧2 · bấm chuột trái + phải để mở Mission Control |
 | **Menu bar** | Gom icon thừa sau vạch ⏽, tự ẩn · kéo thả để sắp xếp ngay trong danh sách · tên riêng cho Wi‑Fi, Pin, Đồng hồ… |
 | **Quạt** | Tốc độ quạt, nhiệt độ theo nhóm và bảng toàn bộ cảm biến · chế độ Tự động / Cố định / Theo nhiệt độ của cảm biến tự chọn, có làm mượt |
 | **Âm thanh** | Chọn thiết bị và âm lượng đầu ra/đầu vào · âm lượng và tắt tiếng riêng cho từng app |
@@ -40,7 +40,8 @@ Lần đầu mở, TileDeck hiện bảng **Quyền truy cập**. Mỗi quyền 
 | Quyền | Dùng cho |
 |---|---|
 | Trợ năng (Accessibility) | F1/F2 màn ngoài, ⌘Tab, chia cửa sổ, dán clipboard, cử chỉ chuột, sắp xếp thanh menu |
-| Ghi màn hình | Ảnh xem trước cửa sổ trong ⌘Tab, chụp màn hình ⌘⇧1 |
+| Ghi màn hình | Ảnh xem trước cửa sổ trong ⌘Tab, chụp màn hình ⌘⇧1, quay màn hình kèm tiếng máy ⌘⇧2 |
+| Micro | Ghi giọng nói khi quay màn hình ⌘⇧2 |
 | Ghi âm thanh hệ thống | Âm lượng từng app |
 | Thông báo | Cảnh báo pin, lịch hiệu chuẩn |
 | Chạy nền (Mục đăng nhập) | Trình trợ giúp điều khiển quạt |

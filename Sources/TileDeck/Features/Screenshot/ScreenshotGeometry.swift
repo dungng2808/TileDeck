@@ -1,5 +1,50 @@
 import AppKit
 
+/// How the area to capture gets chosen.
+enum ScreenCaptureMode: String, CaseIterable, Identifiable {
+    case window, region, fullScreen
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .window: "Theo cửa sổ"
+        case .region: "Tự kéo"
+        case .fullScreen: "Toàn màn hình"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .window: "macwindow"
+        case .region: "viewfinder"
+        case .fullScreen: "display"
+        }
+    }
+}
+
+/// Shared by screenshots and recordings, and remembered between them.
+@MainActor
+final class ScreenCaptureOptions: ObservableObject {
+    private static let modeKey = "screenCaptureMode"
+    static let shared = ScreenCaptureOptions(
+        mode: UserDefaults.standard.string(forKey: modeKey).flatMap(ScreenCaptureMode.init) ?? .region)
+
+    @Published var mode: ScreenCaptureMode {
+        didSet { UserDefaults.standard.set(mode.rawValue, forKey: Self.modeKey) }
+    }
+
+    init(mode: ScreenCaptureMode) {
+        self.mode = mode
+    }
+}
+
+/// A window that can be picked with one click, in overlay coordinates.
+struct ScreenshotWindow: Equatable {
+    let id: CGWindowID
+    let frame: CGRect
+}
+
 /// The selection maths, in the bottom-left-origin coordinates of an overlay.
 enum ScreenshotGeometry {
     struct Edges: OptionSet {
@@ -71,10 +116,53 @@ enum ScreenshotGeometry {
         return CGPoint(x: x, y: selection.minY + gap)
     }
 
-    static func fileName(for date: Date) -> String {
+    /// Window bounds count from the primary display's top left; overlays from their own bottom left.
+    static func overlayFrame(ofWindowBounds bounds: CGRect, screenFrame: CGRect, primaryScreenHeight: CGFloat) -> CGRect {
+        CGRect(x: bounds.minX - screenFrame.minX, y: primaryScreenHeight - bounds.maxY - screenFrame.minY,
+               width: bounds.width, height: bounds.height)
+    }
+
+    /// The apps' windows showing on a display, frontmost first.
+    @MainActor
+    static func windows(on screen: NSScreen) -> [ScreenshotWindow] {
+        guard let primary = NSScreen.screens.first else { return [] }
+        let area = CGRect(origin: .zero, size: screen.frame.size)
+        let me = getpid()
+        let apps = Set(NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }.map(\.processIdentifier))
+        let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return info.compactMap { entry in
+            guard entry[kCGWindowLayer as String] as? Int == 0,
+                  (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+                  let id = entry[kCGWindowNumber as String] as? CGWindowID,
+                  let pid = entry[kCGWindowOwnerPID as String] as? pid_t, pid != me, apps.contains(pid),
+                  let raw = entry[kCGWindowBounds as String], let bounds = CGRect(dictionaryRepresentation: raw as! CFDictionary) else { return nil }
+            let frame = overlayFrame(ofWindowBounds: bounds, screenFrame: screen.frame, primaryScreenHeight: primary.frame.height).intersection(area)
+            guard !frame.isNull, min(frame.width, frame.height) >= 60 else { return nil }
+            return ScreenshotWindow(id: id, frame: frame)
+        }
+    }
+
+    /// The selection as ScreenCaptureKit wants it: measured from the top left.
+    static func topLeftRegion(of selection: CGRect, screenHeight: CGFloat) -> CGRect {
+        CGRect(x: selection.minX, y: screenHeight - selection.maxY, width: selection.width, height: selection.height)
+    }
+
+    /// Video pixels for a region: the encoder needs even sizes and tops out at 4096.
+    static func recordingSize(of region: CGSize, scale: CGFloat) -> (width: Int, height: Int) {
+        let shrink = min(1, 4096 / max(region.width * scale, region.height * scale, 1))
+        return (max(Int(region.width * scale * shrink) & ~1, 2), max(Int(region.height * scale * shrink) & ~1, 2))
+    }
+
+    static func clock(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        let (hours, minutes, rest) = (total / 3600, total / 60 % 60, total % 60)
+        return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, rest) : String(format: "%02d:%02d", minutes, rest)
+    }
+
+    static func fileName(for date: Date, prefix: String = "Ảnh chụp", extension fileExtension: String = "png") -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
-        return "Ảnh chụp \(formatter.string(from: date)).png"
+        return "\(prefix) \(formatter.string(from: date)).\(fileExtension)"
     }
 }

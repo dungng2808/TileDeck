@@ -35,6 +35,6 @@ TIMESTAMP="--timestamp=none"
 [[ "$IDENTITY" == Developer\ ID* ]] && TIMESTAMP="--timestamp"
 # Inside out: the helper first, then the app that contains it.
 codesign --force --options runtime "$TIMESTAMP" --identifier com.dungng.tiledeck.helper --sign "${IDENTITY:--}" "$APP/Contents/MacOS/TileDeckHelper"
-codesign --force --options runtime "$TIMESTAMP" --sign "${IDENTITY:--}" "$APP"
+codesign --force --options runtime "$TIMESTAMP" --entitlements Resources/TileDeck.entitlements --sign "${IDENTITY:--}" "$APP"
 
 echo "Built $APP ($(du -sh "$APP" | cut -f1)), signed with: ${IDENTITY:-ad-hoc}"

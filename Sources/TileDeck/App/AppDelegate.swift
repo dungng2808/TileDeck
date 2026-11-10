@@ -15,12 +15,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WindowTiler.shared.activateIfNeeded()
         ClipboardStore.shared.activateIfNeeded()
         ScreenshotTool.shared.activateIfNeeded()
+        ScreenRecordTool.shared.activateIfNeeded()
         MouseChord.shared.activateIfNeeded()
         MenuBarManager.shared.activateIfNeeded()
         FanController.shared.activateIfNeeded()
         ChargeLimiter.shared.activateIfNeeded()
         AppVolume.shared.activateIfNeeded()
         PermissionsWindow.shared.showOnFirstLaunch()
+    }
+
+    /// A recording in progress gets saved before the app goes away.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard case .recording = ScreenRecordTool.shared.phase else { return .terminateNow }
+        ScreenRecordTool.shared.stopForQuit { sender.reply(toApplicationShouldTerminate: true) }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

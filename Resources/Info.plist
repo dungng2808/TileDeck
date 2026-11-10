@@ -24,6 +24,8 @@
 	<true/>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>TileDeck chỉnh âm lượng riêng cho từng ứng dụng bằng cách phát lại âm thanh của ứng dụng đó.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>TileDeck ghi giọng nói của bạn khi quay màn hình có bật Micro.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>TileDeck tắt Bluetooth khi gập máy và bật lại khi mở máy (Sleep Guard).</string>
 	<key>NSHighResolutionCapable</key>

@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import ScreenCaptureKit
+import SwiftUI
 
 /// Region screenshots on ⌘⇧1: freezes every display, lets the user drag out an
 /// area, draw on it, then ⌘C copies it and ⌘S saves it. Everything but the
@@ -19,6 +20,8 @@ final class ScreenshotTool: ObservableObject {
     private var overlays: [ScreenshotOverlay] = []
     private var keyMonitor: Any?
     private var previousApp: NSRunningApplication?
+    private var returnApp: NSRunningApplication?
+    private let options = ScreenCaptureOptions.shared
     private let palette = ScreenshotPalette()
 
     private init() {
@@ -51,8 +54,12 @@ final class ScreenshotTool: ObservableObject {
 
     // MARK: Session
 
-    func begin() {
-        guard overlays.isEmpty, !isCapturing else { return }
+    var isOpen: Bool { !overlays.isEmpty || isCapturing }
+
+    /// `replacing` runs once the overlay is up, so switching from recording shows no gap.
+    func begin(returningTo app: NSRunningApplication? = nil, replacing: (() -> Void)? = nil) {
+        guard !isOpen, replacing != nil || ScreenRecordTool.shared.phase != .selecting else { return }
+        returnApp = app
         guard WindowSwitcher.shared.hasScreenRecording else {
             WindowSwitcher.shared.requestScreenRecording()
             return
@@ -62,11 +69,13 @@ final class ScreenshotTool: ObservableObject {
             let shots = await captureScreens()
             isCapturing = false
             show(shots)
+            replacing?()
         }
     }
 
     private func captureScreens() async -> [(screen: NSScreen, image: CGImage)] {
         guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else { return [] }
+        let own = content.applications.filter { $0.processID == getpid() }
         var shots: [(screen: NSScreen, image: CGImage)] = []
         for screen in NSScreen.screens {
             guard let id = screen.displayID, let display = content.displays.first(where: { $0.displayID == id }) else { continue }
@@ -74,7 +83,7 @@ final class ScreenshotTool: ObservableObject {
             configuration.width = Int(screen.frame.width * screen.backingScaleFactor)
             configuration.height = Int(screen.frame.height * screen.backingScaleFactor)
             configuration.showsCursor = false
-            let filter = SCContentFilter(display: display, excludingWindows: [])
+            let filter = SCContentFilter(display: display, excludingApplications: own, exceptingWindows: [])
             if let image = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration) {
                 shots.append((screen, image))
             }
@@ -89,7 +98,8 @@ final class ScreenshotTool: ObservableObject {
         }
         // Activating lets the overlay set the cursor; the app in front comes back on close.
         let front = NSWorkspace.shared.frontmostApplication
-        previousApp = front?.processIdentifier == getpid() ? nil : front
+        previousApp = returnApp ?? (front?.processIdentifier == getpid() ? nil : front)
+        returnApp = nil
         NSApp.activate()
 
         let actions = ScreenshotOverlay.Actions(
@@ -103,7 +113,10 @@ final class ScreenshotTool: ObservableObject {
             redo: { [weak self] in self?.activeOverlay?.redo() },
             close: { [weak self] in self?.close() }
         )
-        overlays = shots.map { ScreenshotOverlay(screen: $0.screen, image: $0.image, palette: palette, actions: actions) }
+        let bar = AnyView(ScreenCaptureModeBar(options: options, isRecording: false,
+                                               chooseAction: { [weak self] recording in if recording { self?.switchToRecording() } },
+                                               chooseMode: { [weak self] mode in self?.setMode(mode) }))
+        overlays = shots.map { ScreenshotOverlay(screen: $0.screen, image: $0.image, palette: palette, actions: actions, options: options, modeBar: bar) }
         overlays.forEach { $0.orderFrontRegardless() }
         let underCursor = overlays.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? overlays[0]
         underCursor.makeKey()
@@ -112,6 +125,27 @@ final class ScreenshotTool: ObservableObject {
             let handled = MainActor.assumeIsolated { self?.handleKey(event) ?? false }
             return handled ? nil : event
         }
+        selectScreenIfNeeded()
+    }
+
+    private func setMode(_ mode: ScreenCaptureMode) {
+        guard options.mode != mode else { return }
+        options.mode = mode
+        palette.tool = nil
+        overlays.forEach { $0.modeChanged() }
+        selectScreenIfNeeded()
+    }
+
+    private func selectScreenIfNeeded() {
+        guard options.mode == .fullScreen else { return }
+        (overlays.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? overlays.first)?.selectAll()
+    }
+
+    private func switchToRecording() {
+        let app = previousApp
+        previousApp = nil
+        close()
+        ScreenRecordTool.shared.beginSelection(returningTo: app)
     }
 
     private func close() {

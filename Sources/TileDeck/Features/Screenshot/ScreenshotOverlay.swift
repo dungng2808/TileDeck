@@ -2,7 +2,8 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// One display's frozen picture, with the selection, drawings and toolbar on top.
+/// Picks an area of one display: over a frozen picture for screenshots (with
+/// drawings on top), or over the live screen before a recording.
 @MainActor
 final class ScreenshotOverlay: NSPanel {
     struct Actions {
@@ -18,57 +19,125 @@ final class ScreenshotOverlay: NSPanel {
     /// Above the menu bar and the Dock.
     static let level = NSWindow.Level.screenSaver
 
-    private let canvas: ScreenshotCanvas
+    enum ToolbarPlacement {
+        case followsSelection, bottomCenter
+    }
 
-    init(screen: NSScreen, image: CGImage, palette: ScreenshotPalette, actions: Actions) {
+    let targetScreen: NSScreen
+    private let canvas: ScreenshotCanvas
+    private let options: ScreenCaptureOptions
+    private let verb: String
+    private let hintView: PassThroughHostingView<ScreenshotHint>
+    private var modeBarView: NSView?
+
+    convenience init(screen: NSScreen, image: CGImage, palette: ScreenshotPalette, actions: Actions,
+                     options: ScreenCaptureOptions? = nil, modeBar: AnyView? = nil) {
+        self.init(screen: screen, image: image, palette: palette, verb: "chụp", placement: .followsSelection,
+                  options: options ?? ScreenCaptureOptions(mode: .region), modeBar: modeBar,
+                  mayStartSelection: actions.mayStartSelection, selectionStarted: actions.selectionStarted,
+                  toolbar: ScreenshotToolbar(palette: palette, actions: actions))
+    }
+
+    /// Without an `image` the overlay is see-through, so the live screen shows.
+    init<Toolbar: View>(screen: NSScreen, image: CGImage?, palette: ScreenshotPalette, verb: String, placement: ToolbarPlacement,
+                        options: ScreenCaptureOptions, modeBar: AnyView? = nil, windows: [ScreenshotWindow]? = nil,
+                        mayStartSelection: @escaping (ScreenshotOverlay) -> Bool,
+                        selectionStarted: @escaping (ScreenshotOverlay) -> Void,
+                        toolbar toolbarContent: Toolbar) {
+        targetScreen = screen
+        self.options = options
+        self.verb = verb
+        hintView = PassThroughHostingView(rootView: ScreenshotHint(text: ""))
         let bounds = CGRect(origin: .zero, size: screen.frame.size)
-        canvas = ScreenshotCanvas(frame: bounds, image: image, scale: screen.backingScaleFactor, palette: palette)
+        canvas = ScreenshotCanvas(frame: bounds, image: image, scale: screen.backingScaleFactor, palette: palette, placement: placement,
+                                  options: options, windows: windows ?? ScreenshotGeometry.windows(on: screen))
         super.init(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         level = Self.level
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         isReleasedWhenClosed = false
-        isOpaque = true
+        isOpaque = image != nil
+        backgroundColor = image == nil ? .clear : .windowBackgroundColor
         hasShadow = false
         hidesOnDeactivate = false
         acceptsMouseMovedEvents = true
         animationBehavior = .none
 
-        let toolbar = FirstClickHostingView(rootView: ScreenshotToolbar(palette: palette, actions: actions))
+        let toolbar = FirstClickHostingView(rootView: toolbarContent)
         toolbar.frame.size = toolbar.fittingSize
         toolbar.isHidden = true
-        toolbar.wantsLayer = true
-        if let layer = toolbar.layer {
-            layer.masksToBounds = false
-            layer.shadowColor = NSColor.black.cgColor
-            layer.shadowOpacity = 0.5
-            layer.shadowRadius = 14
-            layer.shadowOffset = CGSize(width: 0, height: -4)
-            layer.shadowPath = CGPath(roundedRect: toolbar.bounds, cornerWidth: ScreenshotToolbar.cornerRadius,
-                                      cornerHeight: ScreenshotToolbar.cornerRadius, transform: nil)
-        }
-
-        let hint = PassThroughHostingView(rootView: ScreenshotHint())
-        hint.frame.size = hint.fittingSize
-        hint.setFrameOrigin(CGPoint(x: bounds.midX - hint.frame.width / 2, y: bounds.maxY - 96))
+        Self.addShadow(to: toolbar)
 
         let container = NSView(frame: bounds)
         container.wantsLayer = true
         container.addSubview(canvas)
-        container.addSubview(hint)
+        container.addSubview(hintView)
         container.addSubview(toolbar)
+        if let modeBar {
+            let bar = FirstClickHostingView(rootView: modeBar)
+            bar.frame.size = bar.fittingSize
+            bar.setFrameOrigin(CGPoint(x: bounds.midX - bar.frame.width / 2, y: bounds.maxY - Self.modeBarTop - bar.frame.height))
+            ScreenshotOverlay.addShadow(to: bar)
+            container.addSubview(bar)
+            modeBarView = bar
+            canvas.modeBar = bar
+        }
         contentView = container
         setFrame(screen.frame, display: false)
 
         canvas.toolbar = toolbar
-        canvas.hint = hint
+        canvas.hint = hintView
         canvas.mayStartSelection = { [weak self] in
             guard let self else { return false }
-            return actions.mayStartSelection(self)
+            return mayStartSelection(self)
         }
         canvas.selectionStarted = { [weak self] in
             guard let self else { return }
-            actions.selectionStarted(self)
+            selectionStarted(self)
         }
+        layoutHint()
+        showHoverAtCursor()
+    }
+
+    /// Below the menu bar, so the notch never covers it.
+    private static let modeBarTop: CGFloat = 52
+
+    private static func addShadow(to view: NSView) {
+        view.wantsLayer = true
+        guard let layer = view.layer else { return }
+        layer.masksToBounds = false
+        layer.shadowColor = NSColor.black.cgColor
+        layer.shadowOpacity = 0.5
+        layer.shadowRadius = 14
+        layer.shadowOffset = CGSize(width: 0, height: -4)
+        layer.shadowPath = CGPath(roundedRect: view.bounds, cornerWidth: ScreenshotToolbar.cornerRadius,
+                                  cornerHeight: ScreenshotToolbar.cornerRadius, transform: nil)
+    }
+
+    private func layoutHint() {
+        let text: String
+        switch options.mode {
+        case .window: text = "Rê chuột lên cửa sổ rồi bấm để \(verb)"
+        case .region: text = "Kéo để chọn vùng cần \(verb)"
+        case .fullScreen: text = "Bấm vào màn hình cần \(verb)"
+        }
+        hintView.rootView = ScreenshotHint(text: text)
+        hintView.frame.size = hintView.fittingSize
+        let bounds = CGRect(origin: .zero, size: targetScreen.frame.size)
+        let top = modeBarView.map { $0.frame.minY } ?? bounds.maxY - Self.modeBarTop
+        hintView.setFrameOrigin(CGPoint(x: bounds.midX - hintView.frame.width / 2, y: top - hintView.frame.height - 10))
+    }
+
+    /// Whatever is under the cursor already lights up, before the mouse moves.
+    private func showHoverAtCursor() {
+        canvas.showHover(at: CGPoint(x: NSEvent.mouseLocation.x - targetScreen.frame.minX,
+                                     y: NSEvent.mouseLocation.y - targetScreen.frame.minY))
+    }
+
+    /// A different way of choosing starts over.
+    func modeChanged() {
+        canvas.clearSelection()
+        layoutHint()
+        showHoverAtCursor()
     }
 
     override var canBecomeKey: Bool { true }
@@ -77,12 +146,20 @@ final class ScreenshotOverlay: NSPanel {
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 
     var hasSelection: Bool { canvas.hasSelection }
+    var selectionRect: CGRect? { canvas.selectionRect }
+    var selectionChanged: (() -> Void)? {
+        get { canvas.selectionChanged }
+        set { canvas.selectionChanged = newValue }
+    }
+    /// Set while the selection is exactly a window the user clicked.
+    var selectedWindowID: CGWindowID? { canvas.selectedWindowID }
     var hasMarks: Bool { canvas.hasMarks }
     var isEditingText: Bool { canvas.isEditingText }
     var hasSelectedText: Bool { canvas.hasSelectedText }
     var isComposingText: Bool { canvas.isComposingText }
 
     func clearSelection() { canvas.clearSelection() }
+    func selectAll() { canvas.selectAll() }
     func commitText() { canvas.commitText() }
     func cancelText() { canvas.cancelText() }
     func undo() { canvas.undo() }
@@ -107,13 +184,20 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
     private static let minimumTextWidth: CGFloat = 60
 
     var toolbar: NSView?
+    var modeBar: NSView?
     var hint: NSView?
+    var selectionChanged: (() -> Void)?
     var mayStartSelection: (() -> Bool)?
     var selectionStarted: (() -> Void)?
 
-    private let image: CGImage
+    private let image: CGImage?
     private let scale: CGFloat
     private let palette: ScreenshotPalette
+    private let placement: ScreenshotOverlay.ToolbarPlacement
+    private let options: ScreenCaptureOptions
+    private let windows: [ScreenshotWindow]
+    private var hoveredWindow: ScreenshotWindow?
+    private(set) var selectedWindowID: CGWindowID?
     private var toolChange: AnyCancellable?
 
     private var selection: CGRect?
@@ -127,6 +211,7 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
     private var textTop: CGFloat = 0
 
     private let dim = CAShapeLayer()
+    private let windowOutline = CAShapeLayer()
     private let marksRoot = CALayer()
     private let marksMask = CAShapeLayer()
     private let committed = CALayer()
@@ -138,10 +223,14 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
     private let badge = CALayer()
     private let badgeText = CATextLayer()
 
-    init(frame: CGRect, image: CGImage, scale: CGFloat, palette: ScreenshotPalette) {
+    init(frame: CGRect, image: CGImage?, scale: CGFloat, palette: ScreenshotPalette, placement: ScreenshotOverlay.ToolbarPlacement,
+         options: ScreenCaptureOptions, windows: [ScreenshotWindow]) {
+        self.options = options
+        self.windows = windows
         self.image = image
         self.scale = scale
         self.palette = palette
+        self.placement = placement
         super.init(frame: frame)
 
         let root = CALayer()
@@ -149,14 +238,20 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
         layer = root
         wantsLayer = true
 
-        let picture = CALayer()
-        picture.frame = bounds
-        picture.contents = image
-        picture.contentsGravity = .resize
-        root.addSublayer(picture)
+        if let image {
+            let picture = CALayer()
+            picture.frame = bounds
+            picture.contents = image
+            picture.contentsGravity = .resize
+            root.addSublayer(picture)
+        }
 
         dim.fillRule = .evenOdd
         dim.fillColor = NSColor.black.withAlphaComponent(0.5).cgColor
+
+        windowOutline.fillColor = nil
+        windowOutline.strokeColor = NSColor.controlAccentColor.cgColor
+        windowOutline.lineWidth = 2.5
 
         marksRoot.mask = marksMask
         marksRoot.addSublayer(committed)
@@ -178,10 +273,10 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
         handles.strokeColor = NSColor.controlAccentColor.cgColor
         handles.lineWidth = 1.5
 
-        for shape in [dim, marksRoot, marksMask, committed, draftRoot, guides, outlineShade, outline, handles] {
+        for shape in [dim, windowOutline, marksRoot, marksMask, committed, draftRoot, guides, outlineShade, outline, handles] {
             shape.frame = bounds
         }
-        for shape in [dim, marksRoot, guides, outlineShade, outline, handles] { root.addSublayer(shape) }
+        for shape in [dim, windowOutline, marksRoot, guides, outlineShade, outline, handles] { root.addSublayer(shape) }
 
         badge.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
         badge.cornerRadius = 6
@@ -215,6 +310,7 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     var hasSelection: Bool { selection != nil }
+    var selectionRect: CGRect? { selection }
     var hasMarks: Bool { !marks.isEmpty }
     var isEditingText: Bool { textField != nil }
     var hasSelectedText: Bool { (textField?.currentEditor()?.selectedRange.length ?? 0) > 0 }
@@ -225,6 +321,7 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
     func clearSelection() {
         cancelText()
         selection = nil
+        selectedWindowID = nil
         drag = nil
         marks = []
         undone = []
@@ -232,9 +329,22 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
         render()
     }
 
+    func selectAll() {
+        selectionStarted?()
+        selection = bounds
+        selectedWindowID = nil
+        render()
+    }
+
+    private func pixels(of selection: CGRect) -> CGRect {
+        ScreenshotGeometry.pixelRect(of: selection, in: bounds.size,
+                                     imageWidth: image?.width ?? Int(bounds.width * scale),
+                                     imageHeight: image?.height ?? Int(bounds.height * scale))
+    }
+
     func selectedImage() -> (image: CGImage, scale: CGFloat)? {
-        guard let selection else { return nil }
-        let pixels = ScreenshotGeometry.pixelRect(of: selection, in: bounds.size, imageWidth: image.width, imageHeight: image.height)
+        guard let selection, let image else { return nil }
+        let pixels = pixels(of: selection)
         guard let cropped = image.cropping(to: pixels) else { return nil }
         guard !marks.isEmpty else { return (cropped, scale) }
 
@@ -383,6 +493,16 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
             }
             return
         }
+        switch options.mode {
+        case .window:
+            pickWindow(at: point)
+            return
+        case .fullScreen:
+            if selection == nil, mayStartSelection?() ?? true { selectAll() }
+            return
+        case .region:
+            break
+        }
         if let selection {
             let edges = ScreenshotGeometry.edges(at: point, of: selection, tolerance: Self.grabTolerance)
             if !edges.isEmpty {
@@ -399,11 +519,20 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
         render()
     }
 
+    private func pickWindow(at point: CGPoint) {
+        guard marks.isEmpty, mayStartSelection?() ?? true, let window = windows.first(where: { $0.frame.contains(point) }) else { return }
+        selectionStarted?()
+        selection = window.frame
+        selectedWindowID = window.id
+        render()
+    }
+
     /// Drawings would lose their place, so a selection that has any stays put.
     private func begin(at point: CGPoint) {
         guard marks.isEmpty, mayStartSelection?() ?? true else { return }
         selectionStarted?()
         selection = nil
+        selectedWindowID = nil
         drag = .creating(anchor: point)
     }
 
@@ -413,8 +542,10 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
         case .creating(let anchor):
             selection = ScreenshotGeometry.selection(from: anchor, to: point, in: bounds)
         case .moving(let start, let original):
+            selectedWindowID = nil
             selection = ScreenshotGeometry.moved(original, by: CGVector(dx: point.x - start.x, dy: point.y - start.y), in: bounds)
         case .resizing(let edges, let original):
+            selectedWindowID = nil
             selection = ScreenshotGeometry.resized(original, edges: edges, to: point, in: bounds)
         case .drawing:
             draft?.extend(to: point)
@@ -447,22 +578,32 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
     override func mouseEntered(with event: NSEvent) { updateCursor(at: location(of: event)) }
 
     override func mouseExited(with event: NSEvent) {
-        guides.path = nil
+        showHover(at: nil)
     }
 
     private func updateCursor(at point: CGPoint) {
-        showGuides(at: point)
+        showHover(at: point)
         guard drag == nil else { return }
-        if let toolbar, !toolbar.isHidden, toolbar.frame.contains(point) {
+        if isOverControls(point) {
             NSCursor.arrow.set()
             return
         }
-        guard let selection else {
-            NSCursor.crosshair.set()
+        if let tool = palette.tool, let selection {
+            (selection.contains(point) ? (tool == .text ? NSCursor.iBeam : NSCursor.crosshair) : NSCursor.arrow).set()
             return
         }
-        if let tool = palette.tool {
-            (selection.contains(point) ? (tool == .text ? NSCursor.iBeam : NSCursor.crosshair) : NSCursor.arrow).set()
+        switch options.mode {
+        case .window:
+            (hoveredWindow == nil ? NSCursor.arrow : NSCursor.pointingHand).set()
+            return
+        case .fullScreen:
+            (selection == nil ? NSCursor.pointingHand : NSCursor.arrow).set()
+            return
+        case .region:
+            break
+        }
+        guard let selection else {
+            NSCursor.crosshair.set()
             return
         }
         switch ScreenshotGeometry.edges(at: point, of: selection, tolerance: Self.grabTolerance) {
@@ -473,19 +614,45 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
         }
     }
 
-    /// Thin lines through the cursor help line up the first corner.
-    private func showGuides(at point: CGPoint) {
+    private func isOverControls(_ point: CGPoint) -> Bool {
+        [toolbar, modeBar].contains { view in view.map { !$0.isHidden && $0.frame.contains(point) } ?? false }
+    }
+
+    /// In window mode, lights up the window under the cursor. When dragging
+    /// out a region, thin lines through the cursor help line up the first corner.
+    func showHover(at point: CGPoint?) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
-        guard selection == nil else {
-            guides.path = nil
-            return
+        hoveredWindow = nil
+        windowOutline.path = nil
+        guides.path = nil
+        defer { if selection == nil { updateDim(hole: hoveredWindow?.frame) } }
+        guard let point, drag == nil, bounds.contains(point), !isOverControls(point) else { return }
+
+        switch options.mode {
+        case .window:
+            guard marks.isEmpty, palette.tool == nil, let window = windows.first(where: { $0.frame.contains(point) }) else { return }
+            hoveredWindow = window
+            if window.id != selectedWindowID {
+                windowOutline.path = CGPath(rect: window.frame.insetBy(dx: 1.25, dy: 1.25), transform: nil)
+            }
+        case .region:
+            guard selection == nil else { return }
+            let lines = CGMutablePath()
+            lines.addLines(between: [CGPoint(x: point.x, y: bounds.minY), CGPoint(x: point.x, y: bounds.maxY)])
+            lines.addLines(between: [CGPoint(x: bounds.minX, y: point.y), CGPoint(x: bounds.maxX, y: point.y)])
+            guides.path = lines
+        case .fullScreen:
+            break
         }
-        let lines = CGMutablePath()
-        lines.addLines(between: [CGPoint(x: point.x, y: bounds.minY), CGPoint(x: point.x, y: bounds.maxY)])
-        lines.addLines(between: [CGPoint(x: bounds.minX, y: point.y), CGPoint(x: bounds.maxX, y: point.y)])
-        guides.path = lines
+    }
+
+    private func updateDim(hole: CGRect?) {
+        let shade = CGMutablePath()
+        shade.addRect(bounds)
+        if let hole { shade.addRect(hole) }
+        dim.path = shade
     }
 
     // MARK: Drawing
@@ -495,10 +662,7 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
 
-        let shade = CGMutablePath()
-        shade.addRect(bounds)
-        if let selection { shade.addRect(selection) }
-        dim.path = shade
+        updateDim(hole: selection ?? hoveredWindow?.frame)
         hint?.isHidden = selection != nil
 
         guard let selection else {
@@ -507,17 +671,19 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
             outlineShade.path = nil
             handles.path = nil
             badge.isHidden = true
-            toolbar?.isHidden = true
+            placeToolbar(for: nil)
             return
         }
 
         guides.path = nil
+        windowOutline.path = nil
+        hoveredWindow = nil
         marksMask.path = CGPath(rect: selection, transform: nil)
         let frame = CGPath(rect: selection.insetBy(dx: -0.75, dy: -0.75), transform: nil)
         outline.path = frame
         outlineShade.path = frame
 
-        if palette.tool == nil {
+        if palette.tool == nil && options.mode == .region {
             let dots = CGMutablePath()
             for x in [selection.minX, selection.midX, selection.maxX] {
                 for y in [selection.minY, selection.midY, selection.maxY] where x != selection.midX || y != selection.midY {
@@ -529,14 +695,26 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
             handles.path = nil
         }
 
-        let pixels = ScreenshotGeometry.pixelRect(of: selection, in: bounds.size, imageWidth: image.width, imageHeight: image.height)
-        placeBadge("\(Int(pixels.width)) × \(Int(pixels.height))", over: selection)
+        let size = pixels(of: selection)
+        placeBadge("\(Int(size.width)) × \(Int(size.height))", over: selection)
+        placeToolbar(for: selection)
+    }
 
-        if let toolbar {
-            var adjusting = drag != nil
-            if case .drawing = drag { adjusting = false }
+    private func placeToolbar(for selection: CGRect?) {
+        selectionChanged?()
+        guard let toolbar else { return }
+        var adjusting = drag != nil
+        if case .drawing = drag { adjusting = false }
+        modeBar?.isHidden = adjusting
+        switch placement {
+        case .followsSelection:
+            toolbar.isHidden = selection == nil || adjusting
+            if let selection {
+                toolbar.setFrameOrigin(ScreenshotGeometry.toolbarOrigin(for: selection, toolbar: toolbar.frame.size, in: bounds))
+            }
+        case .bottomCenter:
             toolbar.isHidden = adjusting
-            toolbar.setFrameOrigin(ScreenshotGeometry.toolbarOrigin(for: selection, toolbar: toolbar.frame.size, in: bounds))
+            toolbar.setFrameOrigin(CGPoint(x: bounds.midX - toolbar.frame.width / 2, y: bounds.minY + 72))
         }
     }
 
@@ -554,15 +732,17 @@ private final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
 }
 
 /// Shown over the picture, but never in the way of the first drag.
-private final class PassThroughHostingView<Content: View>: NSHostingView<Content> {
+final class PassThroughHostingView<Content: View>: NSHostingView<Content> {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-private struct ScreenshotHint: View {
+struct ScreenshotHint: View {
+    let text: String
+
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "viewfinder").font(.system(size: 13, weight: .semibold))
-            Text("Kéo để chọn vùng cần chụp").font(.system(size: 12.5, weight: .semibold))
+            Text(text).font(.system(size: 12.5, weight: .semibold))
             Text("Esc").font(.system(size: 10, weight: .bold))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
@@ -624,9 +804,7 @@ struct ScreenshotToolbar: View {
         .fixedSize()
     }
 
-    private var separator: some View {
-        Rectangle().fill(.white.opacity(0.14)).frame(width: 1, height: 18)
-    }
+    private var separator: some View { ScreenshotToolbarSeparator() }
 
     private func swatch(_ index: Int) -> some View {
         Button {
@@ -659,7 +837,13 @@ struct ScreenshotToolbar: View {
     }
 }
 
-private struct ToolbarIcon: View {
+struct ScreenshotToolbarSeparator: View {
+    var body: some View {
+        Rectangle().fill(.white.opacity(0.14)).frame(width: 1, height: 18)
+    }
+}
+
+struct ToolbarIcon: View {
     let icon: String
     let help: String
     var isSelected = false
@@ -688,11 +872,12 @@ private struct ToolbarIcon: View {
     }
 }
 
-private struct TextAction: View {
+struct TextAction: View {
     let icon: String
     let title: String
     let help: String
     let isPrimary: Bool
+    var tint = Color.accentColor
     let action: () -> Void
     @State private var isHovered = false
 
@@ -713,7 +898,7 @@ private struct TextAction: View {
     }
 
     private var background: Color {
-        if isPrimary { return Color.accentColor.opacity(isHovered ? 0.85 : 1) }
+        if isPrimary { return tint.opacity(isHovered ? 0.85 : 1) }
         return .white.opacity(isHovered ? 0.2 : 0.12)
     }
 }

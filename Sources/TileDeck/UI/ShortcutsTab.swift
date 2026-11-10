@@ -5,6 +5,7 @@ struct ShortcutsTab: View {
     @ObservedObject private var tiler = WindowTiler.shared
     @ObservedObject private var clipboard = ClipboardStore.shared
     @ObservedObject private var screenshot = ScreenshotTool.shared
+    @ObservedObject private var recording = ScreenRecordTool.shared
     @ObservedObject private var chord = MouseChord.shared
     @State private var trusted = AXWindow.isTrusted
 
@@ -17,6 +18,7 @@ struct ShortcutsTab: View {
             tilingCard
             clipboardCard
             screenshotCard
+            recordingCard
             chordCard
         }
         .onAppear { trusted = AXWindow.isTrusted }
@@ -127,7 +129,7 @@ struct ShortcutsTab: View {
             FeatureHeader(
                 icon: "camera.viewfinder",
                 title: "Chụp vùng màn hình (⌘⇧1)",
-                subtitle: "Kéo chọn vùng, vẽ chú thích, rồi sao chép hoặc lưu",
+                subtitle: "Kéo chọn vùng hoặc bấm vào cửa sổ, vẽ, rồi sao chép hoặc lưu",
                 isOn: Binding(get: { screenshot.isEnabled }, set: { screenshot.setEnabled($0) }),
                 tint: .blue
             )
@@ -139,6 +141,58 @@ struct ShortcutsTab: View {
                     switcher.requestScreenRecording()
                 } label: {
                     Label("Cấp quyền Ghi màn hình để chụp ảnh", systemImage: "rectangle.dashed.badge.record")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.orange)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var recordingCard: some View {
+        Card {
+            FeatureHeader(
+                icon: "record.circle",
+                title: "Quay màn hình có tiếng (⌘⇧2)",
+                subtitle: "Quay một vùng, một cửa sổ hoặc cả màn hình, lưu thành MP4",
+                isOn: Binding(get: { recording.isEnabled }, set: { recording.setEnabled($0) }),
+                tint: .blue
+            )
+            if recording.isEnabled {
+                ShortcutRow([("⌘⇧2", "Mở / Dừng quay"), ("↩", "Bắt đầu quay"), ("Esc", "Hủy")])
+
+                HStack(spacing: 6) {
+                    Text("Tiếng:").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    Chip(title: "Tiếng máy", isSelected: recording.recordsSystemAudio) { recording.setSystemAudio(!recording.recordsSystemAudio) }
+                    Chip(title: "Micro", isSelected: recording.recordsMicrophone) { recording.setMicrophone(!recording.recordsMicrophone) }
+                    Spacer()
+                }
+
+                HStack(spacing: 6) {
+                    Text("Lưu vào:").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    Text(recording.folder.lastPathComponent)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Đổi…") { recording.chooseFolder() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+
+                if recording.microphoneDenied {
+                    Text("Micro đang bị từ chối. Bấm Micro để mở Cài đặt và cho phép TileDeck.")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if recording.isEnabled && !switcher.hasScreenRecording {
+                Button {
+                    switcher.requestScreenRecording()
+                } label: {
+                    Label("Cấp quyền Ghi màn hình để quay video", systemImage: "rectangle.dashed.badge.record")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.orange)
                 }

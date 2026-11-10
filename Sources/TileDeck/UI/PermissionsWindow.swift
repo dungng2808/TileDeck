@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import SwiftUI
 import UserNotifications
@@ -48,6 +49,7 @@ private final class PermissionStatus: ObservableObject {
     @Published var screenRecording = false
     @Published var notifications: Bool?
     @Published var audioCapture: AppVolume.CapturePermission = .notDetermined
+    @Published var microphone = AVAuthorizationStatus.notDetermined
     @Published var fanHelper: FanController.HelperState = .notInstalled
 
     private var timer: Timer?
@@ -71,6 +73,7 @@ private final class PermissionStatus: ObservableObject {
         accessibility = AXIsProcessTrusted()
         screenRecording = CGPreflightScreenCaptureAccess()
         audioCapture = AppVolume.capturePermission
+        microphone = AVCaptureDevice.authorizationStatus(for: .audio)
         FanController.shared.refreshHelperState()
         fanHelper = FanController.shared.helperState
         // `swift run` has no bundle, and UNUserNotificationCenter needs one.
@@ -109,7 +112,7 @@ private struct PermissionsView: View {
                     Self.openSettings("Privacy_Accessibility")
                 }
                 PermissionRow(icon: "rectangle.dashed.badge.record", title: "Ghi màn hình",
-                              purpose: "Ảnh xem trước cửa sổ trong ⌘Tab, chụp màn hình ⌘⇧1",
+                              purpose: "Ảnh xem trước cửa sổ trong ⌘Tab, chụp ⌘⇧1, quay màn hình kèm tiếng máy ⌘⇧2",
                               granted: status.screenRecording) {
                     if !CGRequestScreenCaptureAccess() { Self.openSettings("Privacy_ScreenCapture") }
                 }
@@ -123,6 +126,15 @@ private struct PermissionsView: View {
                         AppVolume.requestCapturePermission()
                     }
                     status.refresh()
+                }
+                PermissionRow(icon: "mic.fill", title: "Micro",
+                              purpose: "Ghi giọng nói khi quay màn hình ⌘⇧2",
+                              granted: status.microphone == .authorized) {
+                    if status.microphone == .notDetermined {
+                        AVCaptureDevice.requestAccess(for: .audio) { _ in }
+                    } else {
+                        Self.openSettings("Privacy_Microphone")
+                    }
                 }
                 PermissionRow(icon: "bell.badge.fill", title: "Thông báo",
                               purpose: "Cảnh báo pin nóng, pin yếu và các bước hiệu chuẩn pin",

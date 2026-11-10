@@ -1,5 +1,6 @@
 import AppKit
 import CoreAudio
+import SwiftUI
 import XCTest
 @testable import TileDeck
 
@@ -121,6 +122,49 @@ final class HardwareTests: XCTestCase {
         XCTAssertFalse(overlay.hasMarks)
         XCTAssertEqual(pixel(try XCTUnwrap(overlay.selectedImage()).image, 100, 80).1, 255, "undo removes it")
         overlay.orderOut(nil)
+    }
+
+    /// Each way of choosing does its own thing with the same clicks and drags.
+    @MainActor
+    func testCaptureModes() throws {
+        guard let screen = NSScreen.screens.first else { throw XCTSkip("no screen") }
+        let front = ScreenshotWindow(id: 7, frame: CGRect(x: 200, y: 200, width: 300, height: 200))
+        let behind = ScreenshotWindow(id: 8, frame: CGRect(x: 100, y: 100, width: 600, height: 500))
+        func overlay(_ mode: ScreenCaptureMode) -> ScreenshotOverlay {
+            ScreenshotOverlay(screen: screen, image: nil, palette: ScreenshotPalette(), verb: "chụp", placement: .followsSelection,
+                              options: ScreenCaptureOptions(mode: mode), windows: [front, behind],
+                              mayStartSelection: { _ in true }, selectionStarted: { _ in }, toolbar: EmptyView())
+        }
+        func click(_ target: ScreenshotOverlay, _ x: CGFloat, _ y: CGFloat, to end: CGPoint? = nil) throws {
+            let canvas = try XCTUnwrap(target.contentView?.subviews.first)
+            func mouse(_ type: NSEvent.EventType, _ point: CGPoint) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                                   windowNumber: target.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            }
+            let start = CGPoint(x: x, y: y)
+            canvas.mouseDown(with: mouse(.leftMouseDown, start))
+            if let end { canvas.mouseDragged(with: mouse(.leftMouseDragged, end)) }
+            canvas.mouseUp(with: mouse(.leftMouseUp, end ?? start))
+        }
+
+        let windows = overlay(.window)
+        try click(windows, 300, 300)
+        XCTAssertEqual(windows.selectionRect, front.frame, "the frontmost window wins")
+        XCTAssertEqual(windows.selectedWindowID, 7)
+        try click(windows, 150, 150)
+        XCTAssertEqual(windows.selectedWindowID, 8, "another click picks another window")
+
+        let region = overlay(.region)
+        try click(region, 300, 300)
+        XCTAssertFalse(region.hasSelection, "a click selects nothing when dragging is the mode")
+        try click(region, 150, 150, to: CGPoint(x: 250, y: 250))
+        XCTAssertEqual(region.selectionRect, CGRect(x: 150, y: 150, width: 100, height: 100))
+        XCTAssertNil(region.selectedWindowID)
+
+        let whole = overlay(.fullScreen)
+        try click(whole, 300, 300)
+        XCTAssertEqual(whole.selectionRect?.size, screen.frame.size)
+        XCTAssertNil(whole.selectedWindowID)
     }
 
     @MainActor
