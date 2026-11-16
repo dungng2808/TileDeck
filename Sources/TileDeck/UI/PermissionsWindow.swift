@@ -106,7 +106,7 @@ private struct PermissionsView: View {
 
             VStack(spacing: 8) {
                 PermissionRow(icon: "hand.raised.fill", title: "Trợ năng (Accessibility)",
-                              purpose: "F1/F2 màn ngoài, ⌘Tab, chia cửa sổ, dán clipboard, cử chỉ chuột, sắp xếp thanh menu",
+                              purpose: "F1/F2 màn ngoài, ⌘Tab, chia cửa sổ, dán clipboard, cử chỉ chuột, cuộn chuột mượt, sắp xếp thanh menu",
                               granted: status.accessibility) {
                     AXWindow.requestTrust()
                     Self.openSettings("Privacy_Accessibility")

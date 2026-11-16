@@ -30,6 +30,12 @@ final class ScreenRecordTool: ObservableObject {
     @Published private(set) var framesPerSecond: Int
     @Published private(set) var folder: URL
     @Published private(set) var hasSelection = false
+    /// What the video in progress records, and what's muted in it right now.
+    @Published private(set) var recordingSystemAudio = false
+    /// The video in progress has room for the microphone, so it can be switched on and off.
+    @Published private(set) var microphoneSwitchable = false
+    @Published private(set) var systemAudioMuted = false
+    @Published private(set) var microphoneLive = false
 
     private var hotKey: UInt32?
     private var overlays: [ScreenshotOverlay] = []
@@ -252,7 +258,7 @@ final class ScreenRecordTool: ObservableObject {
         // A window can move during the recording, so a fixed outline would mislead.
         let showsOutline = windowID == nil && local.size != screen.frame.size
 
-        let request = ScreenRecordingRequest(
+        var request = ScreenRecordingRequest(
             displayID: displayID,
             region: ScreenshotGeometry.topLeftRegion(of: local, screenHeight: screen.frame.height),
             scale: screen.backingScaleFactor,
@@ -261,6 +267,8 @@ final class ScreenRecordTool: ObservableObject {
             recordsSystemAudio: recordsSystemAudio,
             recordsMicrophone: recordsMicrophone
         )
+        if recordsSystemAudio { request.replayedProcesses = AppVolume.shared.replayedProcesses.withLock { $0 } }
+        request.canUseMicrophone = !microphoneDenied && AVCaptureDevice.default(for: .audio) != nil
         closeOverlays()
         phase = .starting
 
@@ -272,6 +280,10 @@ final class ScreenRecordTool: ObservableObject {
             }
         }
         self.recorder = recorder
+        recordingSystemAudio = request.recordsSystemAudio
+        microphoneSwitchable = request.canUseMicrophone
+        systemAudioMuted = false
+        microphoneLive = request.recordsMicrophone
         Task {
             do {
                 try await recorder.start()
@@ -283,6 +295,40 @@ final class ScreenRecordTool: ObservableObject {
                 phase = .idle
                 ScreenRecordToast.shared.showFailure(error.localizedDescription)
             }
+        }
+    }
+
+    /// Only affects the video: what the speakers play and the mic hears is unchanged.
+    func toggleSystemAudioMute() {
+        systemAudioMuted.toggle()
+        let muted = systemAudioMuted
+        recorder?.systemMuted.withLock { $0 = muted }
+    }
+
+    /// Turns the microphone itself on or off mid-recording, asking for permission the first time.
+    func toggleMicrophone() {
+        guard microphoneSwitchable, let recorder else { return }
+        if microphoneLive {
+            microphoneLive = false
+            recorder.setMicrophone(false)
+            return
+        }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            microphoneLive = true
+            recorder.setMicrophone(true)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard granted, case .recording = self.phase, self.recorder === recorder else { return }
+                        self.microphoneLive = true
+                        recorder.setMicrophone(true)
+                    }
+                }
+            }
+        default:
+            NSWorkspace.shared.open(URL(string: Self.settingsURL + "Privacy_Microphone")!)
         }
     }
 

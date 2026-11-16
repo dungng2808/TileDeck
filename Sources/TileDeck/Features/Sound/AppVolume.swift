@@ -56,6 +56,10 @@ final class AppVolume: ObservableObject {
     private nonisolated let pendingMix = OSAllocatedUnfairLock<Mix?>(initialState: nil)
     /// Only touched on `queue`.
     private nonisolated(unsafe) var players: [String: ProcessTapPlayer] = [:]
+    /// The audio processes being re-played at another level. Recordings leave
+    /// out their original sound and keep TileDeck's re-played one, so a video
+    /// sounds the way the speakers do.
+    nonisolated let replayedProcesses = OSAllocatedUnfairLock<[AudioObjectID]>(initialState: [])
 
     private init() {
         let defaults = UserDefaults.standard
@@ -113,6 +117,7 @@ final class AppVolume: ObservableObject {
         queue.sync {
             players.values.forEach { $0.stop() }
             players.removeAll()
+            replayedProcesses.withLock { $0 = [] }
         }
     }
 
@@ -281,6 +286,8 @@ final class AppVolume: ObservableObject {
         for id in players.keys where !mix.apps.contains(where: { $0.id == id }) {
             players.removeValue(forKey: id)?.stop()
         }
+        let replayed = players.values.flatMap(\.processes)
+        replayedProcesses.withLock { $0 = replayed }
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.lastError != failure else { return }

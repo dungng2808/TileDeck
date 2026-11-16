@@ -215,12 +215,20 @@ private struct ScreenRecordControls: View {
             Text(timerInterval: since...Date.distantFuture, countsDown: false, showsHours: false)
                 .font(.system(size: 13, weight: .semibold).monospacedDigit())
                 .frame(width: 48, alignment: .leading)
-            HStack(spacing: 6) {
-                if tool.recordsSystemAudio { Image(systemName: "speaker.wave.2.fill") }
-                if tool.recordsMicrophone { Image(systemName: "mic.fill") }
+            if tool.recordingSystemAudio || tool.microphoneSwitchable {
+                HStack(spacing: 2) {
+                    if tool.recordingSystemAudio {
+                        muteButton(on: "speaker.wave.2.fill", off: "speaker.slash.fill", isMuted: tool.systemAudioMuted,
+                                   help: tool.systemAudioMuted ? "Bật lại tiếng máy trong video" : "Tắt tiếng máy trong video",
+                                   action: tool.toggleSystemAudioMute)
+                    }
+                    if tool.microphoneSwitchable {
+                        muteButton(on: "mic.fill", off: "mic.slash.fill", isMuted: !tool.microphoneLive,
+                                   help: tool.microphoneLive ? "Tắt micro" : "Bật micro",
+                                   action: tool.toggleMicrophone)
+                    }
+                }
             }
-            .font(.system(size: 11))
-            .opacity(0.65)
             Button(action: tool.stop) {
                 HStack(spacing: 6) {
                     RoundedRectangle(cornerRadius: 2).fill(.white).frame(width: 9, height: 9)
@@ -240,6 +248,19 @@ private struct ScreenRecordControls: View {
                 .padding(.trailing, 8)
         }
     }
+}
+
+private func muteButton(on: String, off: String, isMuted: Bool, help: String, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+        Image(systemName: isMuted ? off : on)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(isMuted ? Color.red : Color.white)
+            .frame(width: 30, height: 28)
+            .background(.white.opacity(isMuted ? 0.16 : 0.08), in: RoundedRectangle(cornerRadius: 7))
+            .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .help(help)
 }
 
 // MARK: When it's done

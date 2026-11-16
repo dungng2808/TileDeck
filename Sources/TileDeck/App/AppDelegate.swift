@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ScreenshotTool.shared.activateIfNeeded()
         ScreenRecordTool.shared.activateIfNeeded()
         MouseChord.shared.activateIfNeeded()
+        MouseScroll.shared.activateIfNeeded()
         MenuBarManager.shared.activateIfNeeded()
         FanController.shared.activateIfNeeded()
         ChargeLimiter.shared.activateIfNeeded()

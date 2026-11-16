@@ -56,6 +56,45 @@ final class ScreenRecordingTests: XCTestCase {
         XCTAssertGreaterThan(strength(of: 1760, in: samples), 0.02, "second source is audible")
     }
 
+    func testMutingKeepsTheTimeButNotTheSound() throws {
+        let time = CMTime(value: 4800, timescale: 48_000)
+        let loud = try audioSample(tone: 440, startFrame: 0, frames: 4800, at: time)
+        let silent = try XCTUnwrap(ScreenRecorder.silenced(loud))
+        XCTAssertEqual(silent.numSamples, loud.numSamples)
+        XCTAssertEqual(silent.presentationTimeStamp, time)
+        let block = try XCTUnwrap(silent.dataBuffer)
+        var bytes = [UInt8](repeating: 1, count: CMBlockBufferGetDataLength(block))
+        _ = bytes.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: $0.count, destination: $0.baseAddress!) }
+        XCTAssertTrue(bytes.allSatisfy { $0 == 0 })
+    }
+
+    /// The microphone can be switched on late and off again; the recorder writes
+    /// silence while it's off, so what's said afterwards stays in its place.
+    func testMicrophoneSwitchedOffAndOnStaysInPlace() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("TileDeckTest-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("source.mp4")
+        // Track 0 plays all 2 s; track 1 is off until 0.5 s, on until 1.0 s, off (silence) until 1.5 s, then on.
+        try await writeFile(source, tones: [440, 1760],
+                            writes: { track, step in track == 0 || (5..<10).contains(step) || step >= 15 },
+                            fills: { track, step in track == 1 && (10..<15).contains(step) })
+
+        let merged = await ScreenRecordingMixer.mergingAudioTracks(of: source)
+        let asset = AVURLAsset(url: merged)
+        let audio = try await asset.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(audio.count, 1)
+        let samples = try readSamples(asset, track: audio[0])
+        func window(_ from: Double, _ to: Double) -> [Float] {
+            Array(samples[Int(from * 48_000)..<min(Int(to * 48_000), samples.count)])
+        }
+        XCTAssertLessThan(strength(of: 1760, in: window(0.05, 0.45)), 0.01, "nothing before the mic came on")
+        XCTAssertGreaterThan(strength(of: 1760, in: window(0.55, 0.95)), 0.05, "the first stretch is in place")
+        XCTAssertLessThan(strength(of: 1760, in: window(1.05, 1.45)), 0.01, "the gap stays quiet")
+        XCTAssertGreaterThan(strength(of: 1760, in: window(1.55, 1.95)), 0.05, "the second stretch is in place")
+        XCTAssertGreaterThan(strength(of: 440, in: window(1.05, 1.45)), 0.05, "the other sound plays throughout")
+    }
+
     func testOneAudioTrackIsLeftAlone() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("TileDeckTest-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -68,7 +107,9 @@ final class ScreenRecordingTests: XCTestCase {
 
     // MARK: Helpers
 
-    private func writeFile(_ url: URL, tones: [Double]) async throws {
+    /// `writes(track, step)` says whether a track has sound in a 0.1 s step; `fills` whether it has the recorder's silence instead.
+    private func writeFile(_ url: URL, tones: [Double], writes: (Int, Int) -> Bool = { _, _ in true },
+                           fills: (Int, Int) -> Bool = { _, _ in false }) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let video = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64,
@@ -90,9 +131,17 @@ final class ScreenRecordingTests: XCTestCase {
             let time = CMTime(value: CMTimeValue(step) * 4800, timescale: 48_000)
             while !video.isReadyForMoreMediaData { usleep(1000) }
             XCTAssertTrue(video.append(try videoSample(at: time)))
-            for (input, tone) in zip(audio, tones) {
+            for (track, (input, tone)) in zip(audio, tones).enumerated() {
+                let sample: CMSampleBuffer
+                if writes(track, step) {
+                    sample = try audioSample(tone: tone, startFrame: step * 4800, frames: 4800, at: time)
+                } else if fills(track, step) {
+                    sample = try XCTUnwrap(ScreenRecorder.silentMicrophoneSample(at: time, frames: 4800))
+                } else {
+                    continue
+                }
                 while !input.isReadyForMoreMediaData { usleep(1000) }
-                XCTAssertTrue(input.append(try audioSample(tone: tone, startFrame: step * 4800, frames: 4800, at: time)))
+                XCTAssertTrue(input.append(sample))
             }
         }
         video.markAsFinished()

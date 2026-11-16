@@ -67,6 +67,79 @@ final class LogicTests: XCTestCase {
         XCTAssertGreaterThan(wrapped.height, oneLine.height * 2, "long text takes several lines")
     }
 
+    // MARK: Mouse scrolling
+
+    func testSmoothScrollCoversTheWholeDistance() {
+        for rate in [60.0, 100, 120] {
+            for glide in MouseScroll.glides.map(\.glide) {
+                var state = SmoothScrollState()
+                state.add(lines: CGVector(dx: 0, dy: 3), step: 50)
+                var steps: [Int32] = []
+                while let frame = state.nextFrame(glide: glide, elapsed: 1 / rate) {
+                    XCTAssertEqual(frame.dx, 0)
+                    steps.append(frame.dy)
+                }
+                let label = "\(Int(rate)) Hz, glide \(glide): \(steps)"
+                XCTAssertEqual(steps.reduce(0, +), 150, "three lines of 50 points, no more and no less, \(label)")
+                XCTAssertTrue(steps.allSatisfy { $0 >= 0 }, "never steps backwards, \(label)")
+                let duration = Double(steps.count) / rate
+                XCTAssertGreaterThan(duration, 0.1, "glides, \(label)")
+                XCTAssertLessThan(duration, 0.6, "and settles, \(label)")
+                XCTAssertLessThanOrEqual(steps.filter { $0 == 1 }.count, 3, "no long crawl of single points, \(label)")
+            }
+        }
+    }
+
+    /// Clicking the wheel steadily should feel like one even glide, not a pulse per click.
+    func testSteadyClicksGiveASteadySpeed() {
+        let rate = 100.0, clickEvery = 9  // a click each 90 ms
+        var state = SmoothScrollState()
+        var steps: [Int32] = []
+        for frame in 0..<(clickEvery * 12) {
+            if frame % clickEvery == 0 { state.add(lines: CGVector(dx: 0, dy: 1), step: 85) }
+            steps.append(state.nextFrame(glide: 17, elapsed: 1 / rate)?.dy ?? 0)
+        }
+        let settled = steps.suffix(clickEvery * 6)
+        let slowest = Double(settled.min()!), fastest = Double(settled.max()!)
+        XCTAssertGreaterThan(slowest / fastest, 0.5, "speed varies less than 2× between clicks: \(Array(settled))")
+    }
+
+    func testAFastFlickGlidesInsteadOfJumping() {
+        var state = SmoothScrollState()
+        state.add(lines: CGVector(dx: 0, dy: 400), step: 85)
+        XCTAssertEqual(state.remaining.dy, SmoothScrollState.maxQueued, "a runaway flick is capped")
+        var fastest: Int32 = 0
+        for _ in 0..<50 { fastest = max(fastest, state.nextFrame(glide: 17, elapsed: 1.0 / 100)!.dy) }
+        let first = (dx: Int32(0), dy: fastest)
+        XCTAssertLessThanOrEqual(CGFloat(first.dy), SmoothScrollState.maxSpeed / 100 + 1, "no frame jumps a screen")
+    }
+
+    func testMouseWheelsAreToldApartFromTrackpads() {
+        XCTAssertEqual(ScrollSource.classify(continuous: false, phase: 0, momentum: 0, senderPID: 0), .wheel, "a plain wheel click")
+        XCTAssertEqual(ScrollSource.classify(continuous: true, phase: 0, momentum: 0, senderPID: 2301), .wheel, "a click re-sent by Logi Options+")
+        XCTAssertEqual(ScrollSource.classify(continuous: true, phase: 2, momentum: 0, senderPID: 2301), .driverGesture, "the MX Master thumb wheel via Logi Options+")
+        XCTAssertEqual(ScrollSource.classify(continuous: true, phase: 2, momentum: 0, senderPID: 0), .trackpad, "a trackpad swipe")
+        XCTAssertEqual(ScrollSource.classify(continuous: true, phase: 0, momentum: 2, senderPID: 0), .trackpad, "trackpad momentum")
+    }
+
+    func testOnlyTheMouseDriversDesktopArrowsAreMirrored() {
+        let control = CGEventFlags([.maskControl, .maskNumericPad])
+        XCTAssertEqual(DriverGesture.mirroredKey(123, flags: control, fromMouseDriver: true), 124, "hold + move left")
+        XCTAssertEqual(DriverGesture.mirroredKey(124, flags: control, fromMouseDriver: true), 123, "hold + move right")
+        XCTAssertNil(DriverGesture.mirroredKey(123, flags: control, fromMouseDriver: false), "⌃← typed on the keyboard stays")
+        XCTAssertNil(DriverGesture.mirroredKey(123, flags: [.maskNumericPad], fromMouseDriver: true), "a plain arrow stays")
+        XCTAssertNil(DriverGesture.mirroredKey(126, flags: control, fromMouseDriver: true), "up and down keep their own meaning")
+        XCTAssertFalse(DriverGesture.isMouseDriver(getpid()))
+    }
+
+    func testTurningTheWheelBackStopsTheGlide() {
+        var state = SmoothScrollState()
+        state.add(lines: CGVector(dx: 0, dy: 5), step: 50)
+        _ = state.nextFrame(glide: 26, elapsed: 1.0 / 120)
+        state.add(lines: CGVector(dx: 0, dy: -1), step: 50)
+        XCTAssertEqual(state.remaining.dy, -50, "what was left the other way is dropped")
+    }
+
     // MARK: Updates
 
     func testVersionComparison() {

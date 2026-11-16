@@ -7,11 +7,12 @@ struct ShortcutsTab: View {
     @ObservedObject private var screenshot = ScreenshotTool.shared
     @ObservedObject private var recording = ScreenRecordTool.shared
     @ObservedObject private var chord = MouseChord.shared
+    @ObservedObject private var scroll = MouseScroll.shared
     @State private var trusted = AXWindow.isTrusted
 
     var body: some View {
         VStack(spacing: 10) {
-            if !trusted && (switcher.isEnabled || tiler.isEnabled || clipboard.isEnabled || chord.isEnabled) {
+            if !trusted && (switcher.isEnabled || tiler.isEnabled || clipboard.isEnabled || chord.isEnabled || scroll.isEnabled) {
                 permissionNotice
             }
             switcherCard
@@ -20,6 +21,7 @@ struct ShortcutsTab: View {
             screenshotCard
             recordingCard
             chordCard
+            scrollCard
         }
         .onAppear { trusted = AXWindow.isTrusted }
     }
@@ -211,6 +213,131 @@ struct ShortcutsTab: View {
                 tint: .blue
             )
         }
+    }
+}
+
+extension ShortcutsTab {
+    private var scrollCard: some View {
+        Card {
+            FeatureHeader(
+                icon: "scroll",
+                title: "Cuộn chuột mượt (thay thế Mos)",
+                subtitle: "Cuộn mượt và đảo chiều riêng cho chuột, trackpad giữ nguyên",
+                isOn: Binding(get: { scroll.isEnabled }, set: { scroll.setEnabled($0) }),
+                tint: .blue
+            )
+            if scroll.isEnabled {
+                switchRow("Cuộn mượt", icon: "wind", isOn: scroll.smooth, set: scroll.setSmooth)
+                switchRow("Đảo chiều cuộn của chuột", icon: "arrow.up.arrow.down", isOn: scroll.reverse, set: scroll.setReverse)
+
+                if scroll.smooth {
+                    choiceRow("Tốc độ:", titles: MouseScroll.speeds.map(\.title), selected: scroll.speedIndex, set: scroll.setSpeed)
+                    choiceRow("Độ trôi:", titles: MouseScroll.glides.map(\.title), selected: scroll.glideIndex, set: scroll.setGlide)
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text("Bỏ qua trong:").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        Spacer()
+                        Menu("Thêm app") {
+                            ForEach(scroll.exceptionCandidates, id: \.id) { app in
+                                Button(app.name) { scroll.addException(app.id) }
+                            }
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .font(.system(size: 10.5, weight: .semibold))
+                    }
+                    if scroll.exceptions.isEmpty {
+                        Text("Chưa có app nào. Thêm game hoặc app điều khiển máy từ xa nếu cuộn bị lạ.")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        FlowChips(items: scroll.exceptions) { id in
+                            HStack(spacing: 4) {
+                                Text(MouseScroll.appName(id)).font(.system(size: 10, weight: .medium))
+                                Button { scroll.removeException(id) } label: {
+                                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                                }
+                                .buttonStyle(.plain)
+                                .help("Bỏ khỏi danh sách")
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func switchRow(_ title: String, icon: String, isOn: Bool, set: @escaping (Bool) -> Void) -> some View {
+        HStack {
+            Label(title, systemImage: icon)
+                .labelStyle(TightLabelStyle(tint: .blue))
+                .font(.system(size: 10.5))
+            Spacer()
+            Toggle("", isOn: Binding(get: { isOn }, set: set))
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .labelsHidden()
+        }
+    }
+
+    private func choiceRow(_ label: String, titles: [String], selected: Int, set: @escaping (Int) -> Void) -> some View {
+        HStack(spacing: 6) {
+            Text(label).font(.system(size: 10.5)).foregroundStyle(.secondary).frame(width: 52, alignment: .leading)
+            ForEach(titles.indices, id: \.self) { index in
+                Chip(title: titles[index], isSelected: selected == index) { set(index) }
+            }
+            Spacer()
+        }
+    }
+}
+
+/// Chips that wrap onto new lines.
+private struct FlowChips<Content: View>: View {
+    let items: [String]
+    let content: (String) -> Content
+
+    var body: some View {
+        FlowLayout(spacing: 5) {
+            ForEach(items, id: \.self) { content($0) }
+        }
+    }
+}
+
+private struct FlowLayout: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(width: proposal.width ?? .infinity, subviews: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (index, point) in arrange(width: bounds.width, subviews: subviews).points.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + point.x, y: bounds.minY + point.y), proposal: .unspecified)
+        }
+    }
+
+    private func arrange(width: CGFloat, subviews: Subviews) -> (points: [CGPoint], size: CGSize) {
+        var points: [CGPoint] = []
+        var x: CGFloat = 0, y: CGFloat = 0, lineHeight: CGFloat = 0, widest: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0 && x + size.width > width {
+                x = 0
+                y += lineHeight + spacing
+                lineHeight = 0
+            }
+            points.append(CGPoint(x: x, y: y))
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return (points, CGSize(width: widest, height: y + lineHeight))
     }
 }
 
